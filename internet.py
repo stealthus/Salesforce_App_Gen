@@ -13,7 +13,6 @@ openai.api_key = "sk-proj-J7P5RZjqNkMARatc-rZ6rjq1ZYUh1GTGgzjfWqC_OMtF6E0_oxHvPL
 SERP_API_KEY = "b5b3ca2923207caee780f81704559d4644948a4fffcffa3f9bf12f3dc074a270"
 MODEL = "gpt-3.5-turbo"
 VECTOR_DB_FILE = "vector_db.pkl"
-ONEDRIVE_LINK = "https://netorg152539-my.sharepoint.com/:f:/g/personal/samarth_sairam_stealth-us_com/EiIV4aLIHvhIim_6DJrhZd0BVEB98dNIRWkmOBI_JQAQ9A?e=vavKpG"
 OUTPUT_FOLDER = "output"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
@@ -78,29 +77,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         for i, result in enumerate(serp_results):
             snippet_summary = summarize_text(f"{result['title']} - {result['snippet']} (Source: {result['link']})", 150)
             docs_info.append({"filename": f"SERP_{i+1}", "summary": snippet_summary})
-        internet_data = print("\n".join([f"Source: {r['link']}\nTitle: {r['title']}\nSnippet: {r['snippet']}\n" for r in serp_results]))
-        
-    else:
-        # Only use OneDrive cloud link
-        try:
-            print("[INFO] Downloading from OneDrive link...")
-            response = requests.get(ONEDRIVE_LINK, allow_redirects=True)
-            if response.status_code == 200:
-                temp_path = os.path.join(OUTPUT_FOLDER, "onedrive_temp.docx")
-                with open(temp_path, "wb") as f:
-                    f.write(response.content)
-                if temp_path.lower().endswith(".docx"):
-                    content = read_docx(temp_path)
-                elif temp_path.lower().endswith(".pdf"):
-                    content = read_pdf(temp_path)
-                else:
-                    content = ""
-                if content:
-                    docs_info.append({"filename": "OneDrive Cloud Doc", "summary": content[:1500]})
-            else:
-                print("[WARNING] Could not retrieve OneDrive content")
-        except Exception as e:
-            print("[ERROR] OneDrive retrieval failed:", str(e))
+        internet_data = "\n".join([f"Source: {r['link']}\nTitle: {r['title']}\nSnippet: {r['snippet']}\n" for r in serp_results])
 
     # Update vector DB
     create_or_load_vector_db(docs_info)

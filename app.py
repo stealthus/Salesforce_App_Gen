@@ -2,7 +2,6 @@ from flask import Flask, request, send_file, jsonify, make_response
 from flask_cors import CORS
 import os
 import tempfile
-import requests
 from internet import read_docx, read_pdf, generate_comprehensive_proposal
 from fpdf import FPDF
 
@@ -41,39 +40,6 @@ def generate_proposal():
                 return jsonify({"error": "Unsupported file format"}), 400
 
             docs_info = []
-            print("Print the va+riable - onedrive_docs")
-            # Access OneDrive cloud links
-            onedrive_docs = [
-                {
-                    "filename": "existing_documents",
-                    "url": "https://netorg152539-my.sharepoint.com/:f:/g/personal/samarth_sairam_stealth-us_com/EiIV4aLIHvhIim_6DJrhZd0BVEB98dNIRWkmOBI_JQAQ9A?e=vavKpG"
-                }
-                # Add more cloud document entries here if needed
-            ]
-            print("Print the variable", {onedrive_docs})
-            for doc in onedrive_docs:
-                try:
-                    print(f"[INFO] Downloading from OneDrive URL: {doc['url']}")
-                    response = requests.get(doc["url"])
-                    if response.status_code == 200:
-                        temp_doc_path = os.path.join(tmpdir, doc["filename"])
-                        print(temp_doc_path)
-                        with open(temp_doc_path, "wb") as f:
-                            f.write(response.content)
-
-                        if doc["filename"].lower().endswith(".docx"):
-                            content = read_docx(temp_doc_path)
-                        elif doc["filename"].lower().endswith(".pdf"):
-                            content = read_pdf(temp_doc_path)
-                        else:
-                            continue
-
-                        if content:
-                            docs_info.append({"filename": doc["filename"], "summary": content[:1500]})
-                    else:
-                        print(f"[WARNING] Failed to download {doc['filename']} from OneDrive")
-                except Exception as doc_err:
-                    print(f"[WARNING] Failed to process {doc['filename']}: {doc_err}")
 
             print("[DEBUG] Calling generate_comprehensive_proposal...")
             result = generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet)
