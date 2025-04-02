@@ -1,0 +1,26 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+env/
+venv/
+ENV/
+*.env
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Mac system files
+.DS_Store
+
+# VSCode settings
+.vscode/
+
+# Output files
+output/
+*.pdf
+
+# Secret keys
+.env

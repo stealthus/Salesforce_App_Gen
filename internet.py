@@ -7,10 +7,15 @@ from fpdf import FPDF
 import requests
 import faiss
 import numpy as np
+from io import BytesIO
+from dotenv import load_dotenv
+
+# === Load environment variables ===
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 # === Config ===
-openai.api_key = "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"
-SERP_API_KEY = "b5b3ca2923207caee780f81704559d4644948a4fffcffa3f9bf12f3dc074a270"
 MODEL = "gpt-3.5-turbo"
 VECTOR_DB_FILE = "vector_db.pkl"
 OUTPUT_FOLDER = "output"
