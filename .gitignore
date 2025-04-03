@@ -1,55 +1,11 @@
-# === Python-related ===
+# Prevent API keys and secrets from being tracked
+.env
+
+# Python cache
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
-*.pkl
 
-# === Environment variables ===
-.env
-*.env
-
-# === Output directories & temp files ===
-output/
-*.pdf
+# Optional: prevent temporary files
 *.log
-*.tmp
-*.bak
-
-# === Virtual environment ===
-venv/
-env/
-ENV/
-
-# === Jupyter notebooks ===
-.ipynb_checkpoints/
-
-# === VSCode ===
-.vscode/
-
-# === Mac and OS generated files ===
-.DS_Store
-Thumbs.db
-
-# === Node.js / React frontend ===
-node_modules/
-build/
-dist/
-npm-debug.log
-yarn-error.log
-
-# === Coverage / test ===
-coverage/
-*.cover
-*.py,cover
-
-# === Git / Secrets ===
-*.pem
-*.key
-*.crt
-
-# === Frontend env variables ===
-frontend/.env
-frontend/.env.local
-frontend/.env.development
-frontend/.env.production
