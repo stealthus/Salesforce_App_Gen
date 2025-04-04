@@ -8,6 +8,10 @@ from fpdf import FPDF
 app = Flask(__name__)
 CORS(app)
 
+@app.route("/", methods=["GET"])
+def home():
+    return "Welcome! The Flask app is running on Azure. Use POST /generate to submit your request."
+
 @app.route("/generate", methods=["POST"])
 def generate_proposal():
     try:
@@ -70,6 +74,10 @@ def generate_proposal():
     except Exception as e:
         print("[ERROR] Exception in /generate:", str(e))
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+if __name__ != "__main__":
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app)
 
 if __name__ == "__main__":
     print("[INFO] Starting Flask server with latest code...")
