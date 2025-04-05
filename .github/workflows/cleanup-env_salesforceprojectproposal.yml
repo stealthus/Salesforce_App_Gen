@@ -2,7 +2,7 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python app to Azure Web App - DocGenapp1
+name: Build and deploy Python app to Azure Web App - SalesforceProjectProposal
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
       - name: Set up Python version
         uses: actions/setup-python@v5
         with:
-          python-version: '3.8'
+          python-version: '3.10'
 
       - name: Create and start virtual environment
         run: |
@@ -68,14 +68,14 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_A042A8326ECF4341B9EBA3B24DF3700A }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_A1E677F4110D416AB6416929CBDFE516 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_17851BB5BE474AFB8C1164D35D23469D }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_66AFEA58BF2D47389301A0EDDC5215BF }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D361C1EA45EE4A33A30F0A1898A98C8C }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_25B65D3910944A4C80FE7E477A56680E }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'DocGenapp1'
+          app-name: 'SalesforceProjectProposal'
           slot-name: 'Production'
           
