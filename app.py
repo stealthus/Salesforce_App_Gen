@@ -103,5 +103,4 @@ def generate_proposal():
 
 if __name__ == "__main__":
     print("[INFO] Starting Flask server with latest code...")
-    port = int(os.environ.get("PORT", 8000))  # Azure provides PORT
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
