@@ -9,3 +9,6 @@ __pycache__/
 
 # Optional: prevent temporary files
 *.log
+node_modules/
+.cache/
+build/

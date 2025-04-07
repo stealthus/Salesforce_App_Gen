@@ -1,16 +1,13 @@
-from flask import Flask, request, send_file, jsonify, make_response
+from flask import Flask, request, send_file, jsonify, make_response, send_from_directory
 from flask_cors import CORS
 import os
 import tempfile
 from internet import read_docx, read_pdf, generate_comprehensive_proposal
 from fpdf import FPDF
 
-app = Flask(__name__)
+# Serve frontend from frontend/build directory
+app = Flask(__name__, static_folder="frontend/build", static_url_path="")
 CORS(app)
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Welcome! The Flask app is running on Azure. Use POST /generate to submit your request."
 
 @app.route("/generate", methods=["POST"])
 def generate_proposal():
@@ -44,7 +41,6 @@ def generate_proposal():
                 return jsonify({"error": "Unsupported file format"}), 400
 
             docs_info = []
-
             print("[DEBUG] Calling generate_comprehensive_proposal...")
             result = generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet)
 
@@ -75,10 +71,21 @@ def generate_proposal():
         print("[ERROR] Exception in /generate:", str(e))
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
+# React frontend catch-all route
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_react(path):
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, "index.html")
+
+# Gunicorn (Azure) fix
 if __name__ != "__main__":
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app)
 
+# Local testing
 if __name__ == "__main__":
-    print("[INFO] Starting Flask server with latest code...")
+    print("[INFO] Starting Flask server locally...")
     app.run(debug=True)
