@@ -28,6 +28,14 @@ def serve_react_static(path):
     else:
         return send_from_directory(app.static_folder, "index.html")
 
+# ✅ NEW: Environment variable check route
+@app.route("/check", methods=["GET"])
+def check_env_vars():
+    return jsonify({
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "not set"),
+        "SERP_API_KEY": os.getenv("SERP_API_KEY", "not set")
+    })
+
 # === Main functionality endpoint ===
 @app.route("/generate", methods=["POST"])
 def generate_proposal():
