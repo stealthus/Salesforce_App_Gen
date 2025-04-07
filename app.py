@@ -6,49 +6,59 @@ from internet import read_docx, read_pdf, generate_comprehensive_proposal
 from fpdf import FPDF
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+# === Load environment variables ===
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("[INIT] .env file loaded (if exists)")
+except Exception as e:
+    print("[INIT] Could not load .env (likely on Azure):", str(e))
+
+# === Print current env variables for debugging ===
+openai_key = os.getenv("OPENAI_API_KEY", "not set")
+serp_key = os.getenv("SERP_API_KEY", "not set")
+print(f"[ENV DEBUG] OPENAI_API_KEY: {openai_key[:8]}..." if openai_key != "not set" else "[ENV ERROR] OPENAI_API_KEY not set")
+print(f"[ENV DEBUG] SERP_API_KEY: {serp_key[:8]}..." if serp_key != "not set" else "[ENV ERROR] SERP_API_KEY not set")
+
 # === Flask app with React frontend ===
 app = Flask(
     __name__,
-    static_folder="frontend/build",      # React build path
-    static_url_path=""                   # Serve React from root
+    static_folder="frontend/build",      
+    static_url_path=""
 )
 CORS(app)
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
-# === Print env vars at startup ===
-print("[INIT] OPENAI_API_KEY starts with:", os.getenv("OPENAI_API_KEY", "not set")[:8])
-print("[INIT] SERP_API_KEY present:", "Yes" if os.getenv("SERP_API_KEY") else "No")
-
-# === React frontend serving ===
+# === Serve React frontend ===
 @app.route("/", methods=["GET"])
 def serve_react_index():
+    print("[ROUTE] Serving React index.html")
     return send_from_directory(app.static_folder, "index.html")
 
 @app.route("/<path:path>", methods=["GET"])
 def serve_react_static(path):
     file_path = os.path.join(app.static_folder, path)
     if os.path.isfile(file_path):
+        print(f"[ROUTE] Serving React static file: {path}")
         return send_from_directory(app.static_folder, path)
     else:
+        print(f"[ROUTE] Static file not found, serving index.html fallback for: {path}")
         return send_from_directory(app.static_folder, "index.html")
 
-# ✅ Env var check route
+# === Environment variable test route ===
 @app.route("/check", methods=["GET"])
 def check_env_vars():
+    print("[ROUTE] /check hit, returning env variable status")
     return jsonify({
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "not set"),
         "SERP_API_KEY": os.getenv("SERP_API_KEY", "not set")
     })
 
-# === Main functionality endpoint ===
+# === Main endpoint ===
 @app.route("/generate", methods=["POST"])
 def generate_proposal():
     try:
         print("[DEBUG] Entered generate_proposal endpoint")
-
-        # ✅ Log env vars again here
-        print("[DEBUG] OPENAI_API_KEY:", os.getenv("OPENAI_API_KEY", "not set")[:8])
-        print("[DEBUG] SERP_API_KEY present:", "Yes" if os.getenv("SERP_API_KEY") else "No")
 
         uploaded_file = request.files.get("file")
         user_prompt = request.form.get("prompt")
@@ -63,23 +73,27 @@ def generate_proposal():
             return jsonify({"error": "Missing file or prompt"}), 400
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            print("[DEBUG] Temporary directory created")
             file_path = os.path.join(tmpdir, uploaded_file.filename)
             uploaded_file.save(file_path)
             print(f"[DEBUG] File saved to {file_path}")
 
             if uploaded_file.filename.lower().endswith(".docx"):
+                print("[DEBUG] Reading .docx file")
                 requirements_text = read_docx(file_path)
             elif uploaded_file.filename.lower().endswith(".pdf"):
+                print("[DEBUG] Reading .pdf file")
                 requirements_text = read_pdf(file_path)
             else:
                 print("[ERROR] Unsupported file format")
                 return jsonify({"error": "Unsupported file format"}), 400
 
             docs_info = []
-            print("[DEBUG] Calling generate_comprehensive_proposal...")
+            print("[DEBUG] Calling generate_comprehensive_proposal")
             result = generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet)
 
-            print("[INFO] Result Preview:\n", result[:500])
+            print("[INFO] Generated Result Preview:")
+            print(result[:500])
 
             pdf_stream = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             pdf = FPDF()
@@ -94,6 +108,7 @@ def generate_proposal():
                 pdf_bytes = f.read()
 
             os.unlink(pdf_stream.name)
+            print("[INFO] PDF generated and sent as download")
 
             response = make_response(pdf_bytes)
             response.headers.set('Content-Type', 'application/pdf')
@@ -107,5 +122,5 @@ def generate_proposal():
 
 if __name__ == "__main__":
     print("[INFO] Starting Flask server with latest code...")
-    port = int(os.environ.get("PORT", 8000))  # Azure provides PORT
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 8000))  # Required for Azure
+    app.run(host="0.0.0.0", port=port, debug=True)
