@@ -1,5 +1,5 @@
 # Prevent API keys and secrets from being tracked
-.env
+
 
 # Python cache
 __pycache__/
