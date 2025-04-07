@@ -8,3 +8,4 @@ faiss-cpu
 python-docx
 PyPDF2
 numpy
+gunicorn
