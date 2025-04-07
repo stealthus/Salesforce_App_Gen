@@ -87,5 +87,7 @@ if __name__ != "__main__":
 
 # Local testing
 if __name__ == "__main__":
-    print("[INFO] Starting Flask server locally...")
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 8000))  # 8000 is default for local testing
+    print(f"[INFO] Starting Flask server on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=True)
+
