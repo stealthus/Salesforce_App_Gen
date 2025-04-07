@@ -15,6 +15,10 @@ app = Flask(
 CORS(app)
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
+# === Print env vars at startup ===
+print("[INIT] OPENAI_API_KEY starts with:", os.getenv("OPENAI_API_KEY", "not set")[:8])
+print("[INIT] SERP_API_KEY present:", "Yes" if os.getenv("SERP_API_KEY") else "No")
+
 # === React frontend serving ===
 @app.route("/", methods=["GET"])
 def serve_react_index():
@@ -28,7 +32,7 @@ def serve_react_static(path):
     else:
         return send_from_directory(app.static_folder, "index.html")
 
-# ✅ NEW: Environment variable check route
+# ✅ Env var check route
 @app.route("/check", methods=["GET"])
 def check_env_vars():
     return jsonify({
@@ -41,6 +45,10 @@ def check_env_vars():
 def generate_proposal():
     try:
         print("[DEBUG] Entered generate_proposal endpoint")
+
+        # ✅ Log env vars again here
+        print("[DEBUG] OPENAI_API_KEY:", os.getenv("OPENAI_API_KEY", "not set")[:8])
+        print("[DEBUG] SERP_API_KEY present:", "Yes" if os.getenv("SERP_API_KEY") else "No")
 
         uploaded_file = request.files.get("file")
         user_prompt = request.form.get("prompt")
@@ -55,7 +63,6 @@ def generate_proposal():
             return jsonify({"error": "Missing file or prompt"}), 400
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            print("[DEBUG] Temporary directory created")
             file_path = os.path.join(tmpdir, uploaded_file.filename)
             uploaded_file.save(file_path)
             print(f"[DEBUG] File saved to {file_path}")
@@ -69,12 +76,10 @@ def generate_proposal():
                 return jsonify({"error": "Unsupported file format"}), 400
 
             docs_info = []
-
             print("[DEBUG] Calling generate_comprehensive_proposal...")
             result = generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet)
 
-            print("[INFO] Generated Result Preview:")
-            print(result[:500])
+            print("[INFO] Result Preview:\n", result[:500])
 
             pdf_stream = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             pdf = FPDF()
@@ -89,7 +94,6 @@ def generate_proposal():
                 pdf_bytes = f.read()
 
             os.unlink(pdf_stream.name)
-            print("[INFO] PDF generated and sent as download")
 
             response = make_response(pdf_bytes)
             response.headers.set('Content-Type', 'application/pdf')
@@ -103,4 +107,5 @@ def generate_proposal():
 
 if __name__ == "__main__":
     print("[INFO] Starting Flask server with latest code...")
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 8000))  # Azure provides PORT
+    app.run(host="0.0.0.0", port=port)
