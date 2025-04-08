@@ -36,7 +36,7 @@ function App() {
 
     setLoading(true);
     try {
-      const response = await axios.post("http://localhost:5000/generate", formData, {
+      const response = await axios.post("/generate", formData, {
         responseType: "blob",
       });
       const blob = new Blob([response.data], { type: "application/pdf" });
