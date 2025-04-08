@@ -1,11 +1,11 @@
 Flask
 flask-cors
 openai==0.28.1
-python-dotenv
-requests
-fpdf
-faiss-cpu
 python-docx
 PyPDF2
+fpdf
+requests
 numpy
-gunicorn
+faiss-cpu
+azure-storage-blob
+
