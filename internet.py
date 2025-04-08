@@ -8,18 +8,18 @@ import requests
 import faiss
 import numpy as np
 from io import BytesIO
-from dotenv import load_dotenv
+import logging
 
-# === Load environment variables ===
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
-SERP_API_KEY = os.getenv("SERP_API_KEY")
+# === Configure Logging ===
+logging.basicConfig(level=logging.INFO)
+
+# === Environment Variables (Azure uses App Settings) ===
+openai.api_key = os.environ["OPENAI_API_KEY"]
+SERP_API_KEY = os.environ["SERP_API_KEY"]
 
 # === Config ===
 MODEL = "gpt-3.5-turbo"
-VECTOR_DB_FILE = "vector_db.pkl"
-OUTPUT_FOLDER = "output"
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+VECTOR_DB_FILE = os.path.join("/home", "vector_db.pkl")  # Azure-safe location
 
 # === Utilities ===
 def read_docx(file_path):
@@ -31,25 +31,35 @@ def read_pdf(file_path):
     return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
 
 def summarize_text(text, max_tokens=800):
-    response = openai.ChatCompletion.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "Summarize technical content concisely."},
-            {"role": "user", "content": f"Summarize this in {max_tokens} tokens:\n{text[:8000]}"}
-        ],
-        max_tokens=max_tokens,
-        temperature=0.5
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        logging.info("[OpenAI] Summarizing text...")
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "Summarize technical content concisely."},
+                {"role": "user", "content": f"Summarize this in {max_tokens} tokens:\n{text[:8000]}"}
+            ],
+            max_tokens=max_tokens,
+            temperature=0.5
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"[OpenAI ERROR] {e}")
+        return "Summary not available due to an error."
 
 def serpapi_search(query, max_results=3):
-    params = {
-        "engine": "google",
-        "q": query,
-        "api_key": SERP_API_KEY
-    }
-    response = requests.get("https://serpapi.com/search.json", params=params).json()
-    return response.get("organic_results", [])[:max_results]
+    try:
+        logging.info("[SERPAPI] Searching...")
+        params = {
+            "engine": "google",
+            "q": query,
+            "api_key": SERP_API_KEY
+        }
+        response = requests.get("https://serpapi.com/search.json", params=params).json()
+        return response.get("organic_results", [])[:max_results]
+    except Exception as e:
+        logging.error(f"[SERPAPI ERROR] {e}")
+        return []
 
 def save_pdf(content, filename):
     pdf = FPDF()
@@ -84,20 +94,25 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
             docs_info.append({"filename": f"SERP_{i+1}", "summary": snippet_summary})
         internet_data = "\n".join([f"Source: {r['link']}\nTitle: {r['title']}\nSnippet: {r['snippet']}\n" for r in serp_results])
 
-    # Update vector DB
+    # Update FAISS vector DB
     create_or_load_vector_db(docs_info)
 
     # Inject into user prompt
     final_prompt = user_prompt.replace("{{requirements}}", summarized_requirements)\
                               .replace("{{internet_data}}", internet_data)
 
-    response = openai.ChatCompletion.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You are a Salesforce integration expert."},
-            {"role": "user", "content": final_prompt}
-        ],
-        max_tokens=3500,
-        temperature=0.7
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        logging.info("[OpenAI] Generating proposal...")
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a Salesforce integration expert."},
+                {"role": "user", "content": final_prompt}
+            ],
+            max_tokens=3500,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"[OpenAI Generation ERROR] {e}")
+        return "Proposal generation failed."
