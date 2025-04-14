@@ -112,14 +112,17 @@ def generate_solution_from_uploaded_document(uploaded_file, use_internet):
             docs_info.append({"filename": f"SERP_{i+1}", "summary": snippet})
         internet_data = "\n".join([f"{r['title']} - {r['link']}: {r['snippet']}" for r in serp_results])
 
-    embeddings = [get_embedding(d["summary"]) for d in docs_info]
-    array = np.array(embeddings).astype("float32")
-    index = faiss.IndexFlatL2(array.shape[1])
-    index.add(array)
-    upload_faiss_index_to_azure(index)
+    if use_internet:
+        embeddings = [get_embedding(d["summary"]) for d in docs_info]
+        array = np.array(embeddings).astype("float32")
+        index = faiss.IndexFlatL2(array.shape[1])
+        index.add(array)
+        upload_faiss_index_to_azure(index)
 
-    D, I = index.search(np.array([get_embedding(summarized_text)]).astype("float32"), k=3)
-    context = "\n".join([docs_info[i]["summary"] for i in I[0] if i < len(docs_info)])
+        D, I = index.search(np.array([get_embedding(summarized_text)]).astype("float32"), k=3)
+        context = "\n".join([docs_info[i]["summary"] for i in I[0] if i < len(docs_info)])
+    else:
+        context = summarized_text  # If not using internet or blob, use just the parsed summary
 
     final_prompt = f"""You are an expert solution architect. Based on the following summarized requirements, provide a comprehensive technical solution.
 
