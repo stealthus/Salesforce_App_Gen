@@ -6,7 +6,6 @@ from internet import read_docx, read_pdf, generate_comprehensive_proposal
 from fpdf import FPDF
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-# Serve frontend from frontend/build directory
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
 CORS(app)
 
@@ -31,7 +30,9 @@ def generate_proposal():
             else:
                 return jsonify({"error": "Unsupported file format"}), 400
 
-            docs_info = []
+            # ✅ Pass document content to docs_info
+            docs_info = [{"filename": uploaded_file.filename, "text": requirements_text}]
+
             print("[DEBUG] Calling generate_comprehensive_proposal...")
             result = generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet)
 
@@ -57,7 +58,7 @@ def generate_proposal():
     except Exception as e:
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
-# React frontend catch-all route
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_react(path):
@@ -66,14 +67,11 @@ def serve_react(path):
     else:
         return send_from_directory(app.static_folder, "index.html")
 
-# Gunicorn (Azure) fix
+
 if __name__ != "__main__":
-    from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app)
 
-# Local testing
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))  # 8000 is default for local testing
+    port = int(os.environ.get("PORT", 8000))
     print(f"[INFO] Starting Flask server on port {port}...")
     app.run(host="0.0.0.0", port=port, debug=True)
-
