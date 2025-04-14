@@ -8,4 +8,5 @@ requests
 numpy
 faiss-cpu
 azure-storage-blob
+azure-search-documents>=11.4.0
 
