@@ -43,6 +43,14 @@ def list_blob_files():
     except Exception as e:
         logging.error(f"[AZURE LIST ERROR] {e}")
         return []
+    
+def read_docx(file_path):
+    doc = Document(file_path)
+    return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+
+def read_pdf(file_path):
+    reader = PdfReader(file_path)
+    return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
 
 def read_blob_file(file_name):
     try:
