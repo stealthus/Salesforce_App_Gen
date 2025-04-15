@@ -8,5 +8,6 @@ requests
 numpy
 faiss-cpu
 azure-storage-blob
+azure-core
 azure-search-documents>=11.4.0
-
+pdfplumber 
