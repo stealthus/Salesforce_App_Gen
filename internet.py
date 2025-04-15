@@ -154,9 +154,22 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
                 )
                 internet_data += f"Source: {result.get('link', '')}\nTitle: {result.get('title', '')}\nSnippet: {result.get('snippet', '')}\nSummary: {snippet_summary}\n\n"
 
-            final_prompt = user_prompt.replace("{{requirements}}", summarized_requirements)\
-                                      .replace("{{internet_data}}", internet_data)\
-                                      .replace("{{document_content}}", full_doc[:8000])
+            final_prompt = user_prompt
+
+            if "{{requirements}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{requirements}}", summarized_requirements)
+            else:
+                final_prompt += f"\n\n# Requirements Summary:\n{summarized_requirements}"
+
+            if "{{internet_data}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{internet_data}}", internet_data)
+            else:
+                final_prompt += f"\n\n# Internet Findings:\n{internet_data}"
+
+            if "{{document_content}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{document_content}}", full_doc[:8000])
+            else:
+                final_prompt += f"\n\n# Document Reference:\n{full_doc[:8000]}"
 
             response = openai.ChatCompletion.create(
                 model=MODEL,
