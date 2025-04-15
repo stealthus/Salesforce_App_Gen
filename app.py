@@ -31,7 +31,7 @@ def generate_proposal():
             return jsonify({"error": "Missing filename or prompt"}), 400
 
         # === Download file from Azure Blob
-        blob_client = container_client.get_blob_client(f"existing_documents/{filename}")
+        blob_client = container_client.get_blob_client(filename)
         blob_data = blob_client.download_blob().readall()
 
         # === Determine format and extract text
