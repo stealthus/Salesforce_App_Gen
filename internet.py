@@ -1,3 +1,4 @@
+import pdfplumber
 import os
 import openai
 import logging
