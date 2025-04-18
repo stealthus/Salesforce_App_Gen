@@ -7,10 +7,13 @@ import logging
 import requests
 from docx import Document
 from PyPDF2 import PdfReader
+<<<<<<< HEAD
 import faiss
 import numpy as np
 import io
 from azure.storage.blob import BlobServiceClient
+=======
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 # === Environment Variables ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
+<<<<<<< HEAD
 AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_BLOB_CONTAINER_NAME = os.environ.get("AZURE_BLOB_CONTAINER_NAME")
 
@@ -28,10 +32,17 @@ if not AZURE_STORAGE_CONNECTION_STRING:
 blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
 container_client = blob_service_client.get_container_client(AZURE_BLOB_CONTAINER_NAME)
 
+=======
+
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 # === Config ===
 MODEL = "gpt-3.5-turbo"
 
 # === Utilities ===
+<<<<<<< HEAD
+=======
+
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 def read_docx(file_path):
     try:
         doc = Document(file_path)
@@ -40,6 +51,10 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 def read_pdf(file_path):
     try:
         reader = PdfReader(file_path)
@@ -48,9 +63,14 @@ def read_pdf(file_path):
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 def chunk_text(text, max_words=1200):
     words = text.split()
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+
 
 def summarize_text(text, max_tokens=800):
     try:
@@ -68,6 +88,7 @@ def summarize_text(text, max_tokens=800):
         logging.error(f"[OpenAI SUMMARY ERROR] {e}")
         return "Summary failed."
 
+
 def serpapi_search(query, max_results=3):
     try:
         params = {
@@ -81,6 +102,7 @@ def serpapi_search(query, max_results=3):
         logging.error(f"[SERPAPI ERROR] {e}")
         return []
 
+<<<<<<< HEAD
 # === FAISS Vector Functions ===
 def save_faiss_to_blob(index, blob_name="vector_index/faiss.index"):
     try:
@@ -140,10 +162,14 @@ def get_relevant_chunks_from_index(query, index, texts, k=3):
         return []
 
 # === Proposal Logic ===
+=======
+
+# === Proposal Logic (checkbox checked)
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 def generate_solution_from_prompt(document_text, user_prompt):
     try:
         chunks = chunk_text(document_text)
-        context = "\n".join(chunks[:3])
+        context = "\n".join(chunks[:3])  # using first few chunks only
         final_prompt = user_prompt.replace("{{document_content}}", context)
         response = openai.ChatCompletion.create(
             model=MODEL,
@@ -159,7 +185,12 @@ def generate_solution_from_prompt(document_text, user_prompt):
         logging.error(f"[OpenAI PROPOSAL ERROR] {e}")
         return "Proposal generation failed."
 
+<<<<<<< HEAD
 # === QA Logic ===
+=======
+
+# === QA Logic (checkbox unchecked)
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
     for i, chunk in enumerate(chunks):
@@ -252,4 +283,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 6c455ae35acc33d2463eb5e0af9e658cba630113
