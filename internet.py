@@ -30,7 +30,7 @@ MODEL = "gpt-3.5-turbo"
 def read_docx(file_path):
     try:
         doc = Document(file_path)
-        return "\\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     except Exception as e:
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
@@ -38,7 +38,7 @@ def read_docx(file_path):
 def read_pdf(file_path):
     try:
         reader = PdfReader(file_path)
-        return "\\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
     except Exception as e:
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
