@@ -4,10 +4,6 @@ import logging
 import requests
 from docx import Document
 from PyPDF2 import PdfReader
-import faiss
-import numpy as np
-import io
-from azure.storage.blob import BlobServiceClient
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
@@ -15,12 +11,6 @@ logging.basicConfig(level=logging.INFO)
 # === Environment Variables ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-AZURE_BLOB_CONTAINER_NAME = os.environ.get("AZURE_BLOB_CONTAINER_NAME")
-
-# === Azure Blob Setup ===
-blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
-container_client = blob_service_client.get_container_client(AZURE_BLOB_CONTAINER_NAME)
 
 # === Config ===
 MODEL = "gpt-3.5-turbo"
@@ -35,6 +25,7 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
+
 def read_pdf(file_path):
     try:
         reader = PdfReader(file_path)
@@ -43,9 +34,11 @@ def read_pdf(file_path):
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
+
 def chunk_text(text, max_words=1200):
     words = text.split()
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+
 
 def summarize_text(text, max_tokens=800):
     try:
@@ -53,7 +46,7 @@ def summarize_text(text, max_tokens=800):
             model=MODEL,
             messages=[
                 {"role": "system", "content": "Summarize technical content concisely."},
-                {"role": "user", "content": f"Summarize this in {max_tokens} tokens:\\n{text[:8000]}"}
+                {"role": "user", "content": f"Summarize this in {max_tokens} tokens:\n{text[:8000]}"}
             ],
             max_tokens=max_tokens,
             temperature=0.5
@@ -62,6 +55,7 @@ def summarize_text(text, max_tokens=800):
     except Exception as e:
         logging.error(f"[OpenAI SUMMARY ERROR] {e}")
         return "Summary failed."
+
 
 def serpapi_search(query, max_results=3):
     try:
@@ -76,97 +70,117 @@ def serpapi_search(query, max_results=3):
         logging.error(f"[SERPAPI ERROR] {e}")
         return []
 
-def fetch_all_documents_from_blob():
-    docs_info = []
-    for blob in container_client.list_blobs():
-        if blob.name.endswith(".pdf") or blob.name.endswith(".docx"):
-            blob_client = container_client.get_blob_client(blob.name)
-            stream = blob_client.download_blob().readall()
-            try:
-                if blob.name.endswith(".pdf"):
-                    reader = PdfReader(io.BytesIO(stream))
-                    text = "\\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-                else:
-                    doc = Document(io.BytesIO(stream))
-                    text = "\\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-                docs_info.append({"filename": blob.name, "text": text})
-            except Exception as e:
-                logging.error(f"[READ ERROR: {blob.name}] {e}")
-    return docs_info
 
-def summarize_uploaded_requirements(requirements_docs):
-    combined_text = "\\n".join([doc.get("text", "") for doc in requirements_docs if doc.get("text")])
-    return summarize_text(combined_text, max_tokens=800)
-
-def embed_and_index_documents(docs_info):
-    embeddings = []
-    texts = []
-    for doc in docs_info:
-        chunks = chunk_text(doc.get("text", ""))
-        for chunk in chunks:
-            try:
-                embedding = openai.Embedding.create(
-                    model="text-embedding-ada-002",
-                    input=chunk
-                )['data'][0]['embedding']
-                embeddings.append(embedding)
-                texts.append(chunk)
-            except Exception as e:
-                logging.error(f"[EMBED ERROR] {e}")
-    if not embeddings:
-        return None, []
-    dim = len(embeddings[0])
-    index = faiss.IndexFlatL2(dim)
-    index.add(np.array(embeddings).astype("float32"))
-    return index, texts
-
-def get_relevant_chunks_from_index(query, index, texts, k=3):
+# === Proposal Logic (checkbox checked)
+def generate_solution_from_prompt(document_text, user_prompt):
     try:
-        query_embedding = openai.Embedding.create(
-            model="text-embedding-ada-002",
-            input=query
-        )['data'][0]['embedding']
-        D, I = index.search(np.array([query_embedding]).astype("float32"), k)
-        return [texts[i] for i in I[0]]
-    except Exception as e:
-        logging.error(f"[QUERY ERROR] {e}")
-        return []
-
-def generate_comprehensive_proposal(requirements_docs, user_prompt, use_internet):
-    try:
-        summarized_requirements = summarize_uploaded_requirements(requirements_docs)
-
-        docs_info = fetch_all_documents_from_blob()
-        full_doc = "\\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
-        index, texts = embed_and_index_documents(docs_info)
-
-        if not use_internet:
-            logging.info("[MODE] Internet OFF: Using Azure documents only.")
-            relevant_chunks = get_relevant_chunks_from_index(user_prompt, index, texts)
-            document_context = "\\n".join(relevant_chunks)
-        else:
-            logging.info("[MODE] Internet ON: Adding internet-based context.")
-            serp_results = serpapi_search(summarized_requirements)
-            internet_data = ""
-            for r in serp_results:
-                summary = summarize_text(f"{r.get('title', '')} - {r.get('snippet', '')} (Source: {r.get('link', '')})")
-                internet_data += f"Source: {r.get('link', '')}\\nTitle: {r.get('title', '')}\\nSummary: {summary}\\n\\n"
-            document_context = "\\n".join(get_relevant_chunks_from_index(user_prompt, index, texts))
-            user_prompt = user_prompt.replace("{{internet_data}}", internet_data)
-
-        user_prompt = user_prompt.replace("{{requirements}}", summarized_requirements)
-        user_prompt = user_prompt.replace("{{document_content}}", document_context[:8000])
+        chunks = chunk_text(document_text)
+        context = "\n".join(chunks[:3])  # using first few chunks only
+        final_prompt = user_prompt.replace("{{document_content}}", context)
 
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical expert integrating Salesforce solutions."},
-                {"role": "user", "content": user_prompt}
+                {"role": "system", "content": "You are a Salesforce integration expert."},
+                {"role": "user", "content": final_prompt}
             ],
             max_tokens=3500,
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"[OpenAI PROPOSAL ERROR] {e}")
+        return "Proposal generation failed."
+
+
+# === QA Logic (checkbox unchecked)
+def answer_question_from_doc(document_text, user_question):
+    chunks = chunk_text(document_text)
+    for i, chunk in enumerate(chunks):
+        try:
+            logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
+
+            prompt = f"""
+You are a helpful assistant. Answer the question strictly using the document content below.
+
+Document:
+\"\"\"
+{chunk}
+\"\"\"
+
+Question:
+{user_question}
+
+If the answer is not found, say: "The answer is not available in the document."
+"""
+
+            response = openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=400,
+                temperature=0.2
+            )
+
+            answer = response.choices[0].message.content.strip()
+            if "not available" not in answer.lower() and "not found" not in answer.lower():
+                return answer  # Return first valid answer found
+
+        except Exception as e:
+            logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
+
+    return "The answer is not available in the document."
+
+
+# === Main Entry Point
+def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
+    try:
+        full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
+
+        if not use_internet:
+            logging.info("[MODE] Internet OFF: answering strictly from document.")
+            return answer_question_from_doc(full_doc, user_prompt)
+
+        else:
+            logging.info("[MODE] Internet ON: referencing document + requirements + internet.")
+
+            summarized_requirements = summarize_text(requirements_text, 800)
+            serp_results = serpapi_search(summarized_requirements)
+
+            internet_data = ""
+            for i, result in enumerate(serp_results):
+                snippet_summary = summarize_text(
+                    f"{result.get('title', '')} - {result.get('snippet', '')} (Source: {result.get('link', '')})",
+                    150
+                )
+                internet_data += f"Source: {result.get('link', '')}\nTitle: {result.get('title', '')}\nSnippet: {result.get('snippet', '')}\nSummary: {snippet_summary}\n\n"
+
+            final_prompt = user_prompt
+
+            if "{{requirements}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{requirements}}", summarized_requirements)
+            else:
+                final_prompt += f"\n\n# Requirements Summary:\n{summarized_requirements}"
+
+            if "{{internet_data}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{internet_data}}", internet_data)
+            else:
+                final_prompt += f"\n\n# Internet Findings:\n{internet_data}"
+
+            if "{{document_content}}" in final_prompt:
+                final_prompt = final_prompt.replace("{{document_content}}", full_doc[:8000])
+            else:
+                final_prompt += f"\n\n# Document Reference:\n{full_doc[:8000]}"
+
+            response = openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a technical expert integrating Salesforce solutions."},
+                    {"role": "user", "content": final_prompt}
+                ],
+                max_tokens=3500,
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
 
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
