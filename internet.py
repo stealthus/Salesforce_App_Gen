@@ -4,6 +4,8 @@ import logging
 import requests
 from docx import Document
 from PyPDF2 import PdfReader
+from azure.storage.filedatalake import DataLakeServiceClient
+import tempfile
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +27,6 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
-
 def read_pdf(file_path):
     try:
         reader = PdfReader(file_path)
@@ -34,11 +35,9 @@ def read_pdf(file_path):
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
-
 def chunk_text(text, max_words=1200):
     words = text.split()
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
-
 
 def summarize_text(text, max_tokens=800):
     try:
@@ -56,7 +55,6 @@ def summarize_text(text, max_tokens=800):
         logging.error(f"[OpenAI SUMMARY ERROR] {e}")
         return "Summary failed."
 
-
 def serpapi_search(query, max_results=3):
     try:
         params = {
@@ -70,12 +68,57 @@ def serpapi_search(query, max_results=3):
         logging.error(f"[SERPAPI ERROR] {e}")
         return []
 
+# === Azure Data Lake Integration ===
+
+def get_datalake_service_client():
+    account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+    account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+    return DataLakeServiceClient(
+        account_url=f"https://{account_name}.dfs.core.windows.net",
+        credential=account_key
+    )
+
+def read_files_from_datalake():
+    try:
+        filesystem = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
+        directory = os.environ.get("AZURE_DATA_LAKE_DIRECTORY")
+        service_client = get_datalake_service_client()
+        file_system_client = service_client.get_file_system_client(filesystem)
+        directory_client = file_system_client.get_directory_client(directory)
+        paths = directory_client.get_paths()
+
+        documents = []
+
+        for path in paths:
+            if path.is_directory:
+                continue
+            filename = path.name.split("/")[-1]
+            if not filename.lower().endswith((".pdf", ".docx")):
+                continue
+
+            file_client = file_system_client.get_file_client(path.name)
+            file_contents = file_client.download_file().readall()
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
+                tmp.write(file_contents)
+                tmp.flush()
+                if filename.endswith(".pdf"):
+                    text = read_pdf(tmp.name)
+                else:
+                    text = read_docx(tmp.name)
+
+            documents.append({"filename": filename, "text": text})
+
+        return documents
+    except Exception as e:
+        logging.error(f"[DATA LAKE READ ERROR] {e}")
+        return []
 
 # === Proposal Logic (checkbox checked)
 def generate_solution_from_prompt(document_text, user_prompt):
     try:
         chunks = chunk_text(document_text)
-        context = "\n".join(chunks[:3])  # using first few chunks only
+        context = "\n".join(chunks[:3])
         final_prompt = user_prompt.replace("{{document_content}}", context)
 
         response = openai.ChatCompletion.create(
@@ -92,44 +135,35 @@ def generate_solution_from_prompt(document_text, user_prompt):
         logging.error(f"[OpenAI PROPOSAL ERROR] {e}")
         return "Proposal generation failed."
 
-
 # === QA Logic (checkbox unchecked)
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
     for i, chunk in enumerate(chunks):
         try:
             logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
-
             prompt = f"""
 You are a helpful assistant. Answer the question strictly using the document content below.
 
 Document:
-\"\"\"
-{chunk}
-\"\"\"
+\"\"\"{chunk}\"\"\"
 
 Question:
 {user_question}
 
 If the answer is not found, say: "The answer is not available in the document."
 """
-
             response = openai.ChatCompletion.create(
                 model=MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=400,
                 temperature=0.2
             )
-
             answer = response.choices[0].message.content.strip()
             if "not available" not in answer.lower() and "not found" not in answer.lower():
-                return answer  # Return first valid answer found
-
+                return answer
         except Exception as e:
             logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
-
     return "The answer is not available in the document."
-
 
 # === Main Entry Point
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
@@ -140,48 +174,46 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
             logging.info("[MODE] Internet OFF: answering strictly from document.")
             return answer_question_from_doc(full_doc, user_prompt)
 
-        else:
-            logging.info("[MODE] Internet ON: referencing document + requirements + internet.")
+        logging.info("[MODE] Internet ON: referencing document + requirements + internet.")
 
-            summarized_requirements = summarize_text(requirements_text, 800)
-            serp_results = serpapi_search(summarized_requirements)
+        summarized_requirements = summarize_text(requirements_text, 800)
+        serp_results = serpapi_search(summarized_requirements)
 
-            internet_data = ""
-            for i, result in enumerate(serp_results):
-                snippet_summary = summarize_text(
-                    f"{result.get('title', '')} - {result.get('snippet', '')} (Source: {result.get('link', '')})",
-                    150
-                )
-                internet_data += f"Source: {result.get('link', '')}\nTitle: {result.get('title', '')}\nSnippet: {result.get('snippet', '')}\nSummary: {snippet_summary}\n\n"
-
-            final_prompt = user_prompt
-
-            if "{{requirements}}" in final_prompt:
-                final_prompt = final_prompt.replace("{{requirements}}", summarized_requirements)
-            else:
-                final_prompt += f"\n\n# Requirements Summary:\n{summarized_requirements}"
-
-            if "{{internet_data}}" in final_prompt:
-                final_prompt = final_prompt.replace("{{internet_data}}", internet_data)
-            else:
-                final_prompt += f"\n\n# Internet Findings:\n{internet_data}"
-
-            if "{{document_content}}" in final_prompt:
-                final_prompt = final_prompt.replace("{{document_content}}", full_doc[:8000])
-            else:
-                final_prompt += f"\n\n# Document Reference:\n{full_doc[:8000]}"
-
-            response = openai.ChatCompletion.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a technical expert integrating Salesforce solutions."},
-                    {"role": "user", "content": final_prompt}
-                ],
-                max_tokens=3500,
-                temperature=0.7
+        internet_data = ""
+        for i, result in enumerate(serp_results):
+            snippet_summary = summarize_text(
+                f"{result.get('title', '')} - {result.get('snippet', '')} (Source: {result.get('link', '')})",
+                150
             )
-            return response.choices[0].message.content.strip()
+            internet_data += f"Source: {result.get('link', '')}\nTitle: {result.get('title', '')}\nSnippet: {result.get('snippet', '')}\nSummary: {snippet_summary}\n\n"
 
+        final_prompt = user_prompt
+
+        if "{{requirements}}" in final_prompt:
+            final_prompt = final_prompt.replace("{{requirements}}", summarized_requirements)
+        else:
+            final_prompt += f"\n\n# Requirements Summary:\n{summarized_requirements}"
+
+        if "{{internet_data}}" in final_prompt:
+            final_prompt = final_prompt.replace("{{internet_data}}", internet_data)
+        else:
+            final_prompt += f"\n\n# Internet Findings:\n{internet_data}"
+
+        if "{{document_content}}" in final_prompt:
+            final_prompt = final_prompt.replace("{{document_content}}", full_doc[:8000])
+        else:
+            final_prompt += f"\n\n# Document Reference:\n{full_doc[:8000]}"
+
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a technical expert integrating Salesforce solutions."},
+                {"role": "user", "content": final_prompt}
+            ],
+            max_tokens=3500,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
