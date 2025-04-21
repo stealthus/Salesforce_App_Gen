@@ -6,8 +6,6 @@ PyPDF2
 fpdf
 requests
 numpy
-faiss-cpu
-azure-storage-blob
 azure-core
-azure-search-documents>=11.4.0
-pdfplumber 
+azure-storage-file-datalake
+werkzeug
