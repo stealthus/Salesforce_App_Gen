@@ -32,9 +32,18 @@ def read_docx(file_path):
         return ""
 
 def read_pdf(file_path):
+    from PyPDF2 import PdfReader
     try:
         reader = PdfReader(file_path)
-        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        all_text = []
+        for i, page in enumerate(reader.pages):
+            try:
+                text = page.extract_text()
+                if text:
+                    all_text.append(text)
+            except Exception as e:
+                logging.warning(f"[PDF PAGE ERROR] Page {i+1}: {e}")
+        return "\n".join(all_text)
     except Exception as e:
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
