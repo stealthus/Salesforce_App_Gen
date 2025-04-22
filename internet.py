@@ -35,15 +35,7 @@ def read_docx(file_path):
 def read_pdf(file_path):
     try:
         with pdfplumber.open(file_path) as pdf:
-            text_pages = []
-            for i, page in enumerate(pdf.pages):
-                try:
-                    text = page.extract_text()
-                    if text:
-                        text_pages.append(text)
-                except Exception as e:
-                    logging.warning(f"[PDFPLUMBER PAGE ERROR] Page {i+1}: {e}")
-            return "\n".join(text_pages)
+            return "\n".join([page.extract_text() or "" for page in pdf.pages])
     except Exception as e:
         logging.error(f"[PDFPLUMBER ERROR] {e}")
         return ""
@@ -118,31 +110,22 @@ def read_files_from_datalake():
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                     tmp.write(file_contents)
                     tmp.flush()
-                    tmp_path = tmp.name
-
-                try:
-                    text = read_pdf(tmp_path) if filename.endswith(".pdf") else read_docx(tmp_path)
-                finally:
-                    os.unlink(tmp_path)  # Ensures temp file is deleted
+                    text = read_pdf(tmp.name) if filename.endswith(".pdf") else read_docx(tmp.name)
 
                 if text.strip():
                     documents.append({"filename": filename, "text": text})
                     logging.info(f"[READ OK] {filename} => {len(text)} characters")
                 else:
                     logging.warning(f"[SKIP] {filename} => No readable content")
-
             except Exception as e:
-                logging.error(f"[FAIL READ] {filename} => {type(e).__name__}: {e}")
+                logging.error(f"[FAIL READ] {filename} => {e}")
 
         if not documents:
             logging.warning("[DATA LAKE] No valid documents found.")
-        else:
-            logging.info(f"[SUMMARY] {len(documents)} documents processed successfully.")
-
         return documents
 
     except Exception as e:
-        logging.error(f"[DATA LAKE READ ERROR] {type(e).__name__}: {e}")
+        logging.error(f"[DATA LAKE READ ERROR] {e}")
         return []
 
 # === Logic ===
