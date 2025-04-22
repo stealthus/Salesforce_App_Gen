@@ -7,7 +7,6 @@ from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 import tempfile
-import pdfplumber
 
 
 # === Logging Setup ===
@@ -34,10 +33,10 @@ def read_docx(file_path):
 
 def read_pdf(file_path):
     try:
-        with pdfplumber.open(file_path) as pdf:
-            return "\n".join([page.extract_text() or "" for page in pdf.pages])
+        reader = PdfReader(file_path)
+        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
     except Exception as e:
-        logging.error(f"[PDFPLUMBER ERROR] {e}")
+        logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
 # === Helpers ===
