@@ -10,3 +10,6 @@ azure-core
 azure-storage-file-datalake
 werkzeug
 pdfplumber
+pdfminer.six
+loguru
+gunicorn>=20.1.0
