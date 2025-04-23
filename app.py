@@ -7,7 +7,7 @@ import sys
 import tempfile
 import logging
 
-from internet import read_files_from_datalake, generate_comprehensive_proposal
+from internet import read_files_from_datalake, generate_comprehensive_proposal, read_pdf, read_docx
 
 # === Logging Configuration ===
 logging.basicConfig(
