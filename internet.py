@@ -194,44 +194,80 @@ def generate_solution_from_prompt(document_text, user_prompt):
 
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
-        full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
+        # === Step 1: Summarize uploaded requirements document ===
+        if not requirements_text.strip():
+            logging.warning("[EMPTY] Requirements text is missing.")
+            return "The uploaded requirements document is empty."
 
-        if not full_doc.strip():
-            logging.warning("[EMPTY] No usable content from documents")
-            return "No valid content found in uploaded documents."
-
-        if not use_internet:
-            logging.info("[MODE] Internet OFF")
-            return answer_question_from_doc(full_doc, user_prompt)
-
-        logging.info("[MODE] Internet ON")
         summarized_requirements = summarize_text(requirements_text, 800)
-        serp_results = serpapi_search(summarized_requirements)
+        logging.info(f"[SUMMARY] Requirements summary created.")
 
+        # === Step 2: Search Azure Data Lake for relevant documents ===
+        relevant_azure_texts = []
+        for doc in docs_info:
+            full_text = doc.get("text", "")
+            filename = doc.get("filename", "Unknown")
+            if not full_text.strip():
+                continue
+
+            if any(term.lower() in full_text.lower() for term in summarized_requirements.split()[:30]):
+                relevant_azure_texts.append((filename, full_text))
+                logging.info(f"[MATCH] {filename} matched summarized requirements.")
+
+        if not relevant_azure_texts:
+            logging.warning("[AZURE] No relevant Azure documents found based on summarized requirements.")
+            azure_context = "No relevant documents found in the Azure repository."
+        else:
+            # Merge relevant texts (limit length)
+            azure_context = "\n\n".join([text for _, text in relevant_azure_texts])[:8000]
+
+        # === Step 3: If enabled, gather internet content ===
         internet_data = ""
-        for result in serp_results:
-            snippet = result.get('snippet', '')
-            summary = summarize_text(snippet, 150)
-            internet_data += f"- {result.get('title', '')}: {summary}\n"
+        if use_internet:
+            logging.info("[MODE] Internet ON – Retrieving external context.")
+            serp_results = serpapi_search(summarized_requirements)
+            for result in serp_results:
+                title = result.get("title", "")
+                snippet = result.get("snippet", "")
+                link = result.get("link", "")
+                summary = summarize_text(f"{title} - {snippet}", 150)
+                internet_data += (
+                    f"Source: {link}\n"
+                    f"Title: {title}\n"
+                    f"Snippet: {snippet}\n"
+                    f"Summary: {summary}\n\n"
+                )
+        else:
+            logging.info("[MODE] Internet OFF – Using only internal documents.")
 
-        final_prompt = user_prompt
-        final_prompt += f"\n\n# Summary:\n{summarized_requirements}"
-        final_prompt += f"\n\n# Internet Research:\n{internet_data}"
-        final_prompt += f"\n\n# Document Content:\n{full_doc[:8000]}"
+        # === Step 4: Compose final prompt for OpenAI ===
+        prompt_sections = [
+            f"# User Prompt\n{user_prompt.strip()}",
+            f"# Requirements Summary\n{summarized_requirements.strip()}",
+            f"# Azure Repository Insights\n{azure_context.strip()}"
+        ]
 
+        if use_internet and internet_data.strip():
+            prompt_sections.append(f"# Internet Findings\n{internet_data.strip()}")
+
+        full_prompt = "\n\n".join(prompt_sections)
+
+        # === Step 5: Generate response using OpenAI ===
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical Salesforce expert."},
-                {"role": "user", "content": final_prompt}
+                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise software integrations."},
+                {"role": "user", "content": full_prompt}
             ],
             max_tokens=3500,
             temperature=0.7
         )
+
         result = response.choices[0].message.content.strip()
-        logging.info(f"[GENERATION OK] First 200 characters:\n{result[:200]}...")
+        logging.info(f"[SUCCESS] Proposal generated. Preview: {result[:200]}...")
         return result
 
     except Exception as e:
-        logging.error(f"[GENERATION ERROR] {e}")
-        return "Unable to generate a response due to internal error."
+        logging.error(f"[ERROR] Failed to generate comprehensive proposal: {e}")
+        return "Unable to generate a response due to an internal error."
+
