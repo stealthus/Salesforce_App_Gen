@@ -7,7 +7,6 @@ from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 import tempfile
-import fitz
 import pdfplumber
 
 # === Logging Setup ===
@@ -32,30 +31,26 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
-def read_pdf(file_path, filename="unknown.pdf"):
+def read_pdf(file_path):
+    filename = os.path.basename(file_path)
     try:
-        logging.info(f"[PDFPLUMBER] Starting to parse: {filename}")
+        logging.info(f"[ACCESSING PDF] Reading: {filename}")
         text = ""
-
         with pdfplumber.open(file_path) as pdf:
             for i, page in enumerate(pdf.pages):
                 try:
                     page_text = page.extract_text() or ""
                     if page_text.strip():
                         text += page_text + "\n"
-                        logging.info(f"[PAGE OK] {filename} - Page {i+1} extracted.")
                     else:
-                        logging.warning(f"[PAGE EMPTY] {filename} - Page {i+1} has no text.")
+                        logging.warning(f"[EMPTY PAGE] {filename} - Page {i + 1}")
                 except Exception as page_error:
-                    logging.error(f"[PAGE ERROR] {filename} - Failed to read Page {i+1}: {page_error}")
-
+                    logging.warning(f"[PAGE ERROR] {filename} - Page {i + 1}: {page_error}")
         if not text.strip():
-            logging.warning(f"[FILE EMPTY] No extractable text found in {filename}")
-
-        return text.strip()
-
+            logging.warning(f"[NO TEXT EXTRACTED] {filename}")
+        return text
     except Exception as e:
-        logging.error(f"[PDFPLUMBER ERROR] Failed to open {filename}: {e}")
+        logging.error(f"[READ FAILURE] {filename} => {e}")
         return ""
 
 # === Helpers ===
@@ -128,7 +123,7 @@ def read_files_from_datalake():
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                     tmp.write(file_contents)
                     tmp.flush()
-                    text = read_pdf(tmp.name, filename=filename) if filename.endswith(".pdf") else read_docx(tmp.name)
+                    text = read_pdf(tmp.name) if filename.endswith(".pdf") else read_docx(tmp.name)
 
                 if text.strip():
                     documents.append({"filename": filename, "text": text})
