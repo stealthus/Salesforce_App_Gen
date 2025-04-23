@@ -7,7 +7,7 @@ from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 import tempfile
-import pdfplumber
+import fitz
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -32,12 +32,48 @@ def read_docx(file_path):
         return ""
 
 def read_pdf(file_path):
+    text = ""
+
+    # === Step 1: Try with PyPDF2 ===
     try:
+        logging.info("[PDF PARSE] Trying with PyPDF2...")
         reader = PdfReader(file_path)
-        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        for i, page in enumerate(reader.pages):
+            try:
+                page_text = page.extract_text()
+                if page_text and page_text.strip():
+                    text += page_text + "\n"
+                else:
+                    logging.info(f"[PyPDF2] Page {i} had no extractable text.")
+            except Exception as e:
+                logging.warning(f"[PyPDF2 PAGE ERROR] Page {i} failed: {e}")
+        if text.strip():
+            logging.info("[PDF PARSE] Success with PyPDF2.")
+            return text
     except Exception as e:
-        logging.error(f"[PDF READ ERROR] {e}")
-        return ""
+        logging.warning(f"[PyPDF2 ERROR] Entire file failed: {e}")
+
+    # === Step 2: Fallback to PyMuPDF ===
+    try:
+        logging.info("[PDF PARSE] Fallback to PyMuPDF...")
+        doc = fitz.open(file_path)
+        for i, page in enumerate(doc):
+            try:
+                page_text = page.get_text() or ""
+                if page_text.strip():
+                    text += page_text + "\n"
+                else:
+                    logging.info(f"[PyMuPDF] Page {i} had no extractable text.")
+            except Exception as e:
+                logging.warning(f"[PyMuPDF PAGE ERROR] Page {i} skipped: {e}")
+        if text.strip():
+            logging.info("[PDF PARSE] Success with PyMuPDF.")
+            return text
+    except Exception as e:
+        logging.error(f"[PyMuPDF ERROR] Failed completely: {e}")
+
+    logging.warning("[PDF PARSE] No text could be extracted from the PDF.")
+    return ""
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
