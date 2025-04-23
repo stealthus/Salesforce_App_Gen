@@ -7,7 +7,7 @@ import sys
 import tempfile
 import logging
 
-from internet import read_files_from_datalake, generate_comprehensive_proposal, read_pdf, read_docx
+from internet import read_files_from_datalake, generate_comprehensive_proposal
 
 # === Logging Configuration ===
 logging.basicConfig(
@@ -28,9 +28,9 @@ def generate_proposal():
     logger.info("[START] /generate called")
 
     try:
+        # === Retrieve Request Data ===
         user_prompt = request.form.get("prompt")
         use_internet = request.form.get("use_internet") == "true"
-        uploaded_file = request.files.get("file")
 
         logger.info(f"[PROMPT] Received: {user_prompt}")
         logger.info(f"[INTERNET] Enabled: {use_internet}")
@@ -38,29 +38,6 @@ def generate_proposal():
         if not user_prompt:
             logger.warning("[WARN] Missing prompt")
             return jsonify({"error": "Missing prompt"}), 400
-
-        if not uploaded_file:
-            logger.warning("[WARN] Missing requirements document")
-            return jsonify({"error": "Missing requirements document"}), 400
-
-        # === Extract uploaded requirements document ===
-        ext = os.path.splitext(uploaded_file.filename)[1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            uploaded_file.save(tmp.name)
-            tmp.flush()
-            if ext == ".pdf":
-                from internet import read_pdf
-                requirements_text = read_pdf(tmp.name)
-            elif ext == ".docx":
-                from internet import read_docx
-                requirements_text = read_docx(tmp.name)
-            else:
-                return jsonify({"error": "Unsupported file type. Please upload a PDF or DOCX."}), 400
-
-        if not requirements_text.strip():
-            return jsonify({"error": "Uploaded requirements document is empty."}), 400
-
-        logger.info(f"[REQUIREMENTS] Length: {len(requirements_text)} characters")
 
         # === Read from Azure Data Lake ===
         docs_info = read_files_from_datalake()
@@ -70,10 +47,15 @@ def generate_proposal():
 
         logger.info(f"[FILES] Documents retrieved: {len(docs_info)}")
 
+        # === Extract Document Content ===
+        document_text = "\n".join([doc.get("text", "") for doc in docs_info])
+        logger.info(f"[CONTENT] Total length: {len(document_text)} characters")
+
         # === Generate Proposal ===
-        result = generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet)
+        result = generate_comprehensive_proposal(document_text, docs_info, user_prompt, use_internet)
         logger.info(f"[RESULT] Preview: {result[:300]}")
 
+        # === Append Document Sources ===
         sources_used = "\n".join([f"- {doc['filename']}" for doc in docs_info])
         result += f"\n\n---\n📁 Sources Referenced:\n{sources_used}"
 
@@ -89,6 +71,7 @@ def generate_proposal():
             except Exception as e:
                 logger.error(f"[PDF ERROR] Encoding line failed: {e}")
 
+        # === Write to Temp File ===
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
             pdf.output(tmp_pdf.name)
             tmp_pdf.close()
@@ -96,6 +79,7 @@ def generate_proposal():
                 pdf_bytes = f.read()
             os.unlink(tmp_pdf.name)
 
+        # === Return PDF Response ===
         response = make_response(pdf_bytes)
         response.headers.set("Content-Type", "application/pdf")
         response.headers.set("Content-Disposition", "attachment", filename="Generated_Proposal.pdf")
@@ -105,6 +89,7 @@ def generate_proposal():
     except Exception as e:
         logger.exception("[ERROR] Failed to generate proposal")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
 # === Frontend Route Handling ===
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
@@ -120,6 +105,5 @@ if __name__ != "__main__":
 
 # === Local Development Run ===
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    logger.info(f"[RUNNING] App running on http://0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    print("[INFO] Starting Flask server with latest code...")
+    app.run(debug=True)
