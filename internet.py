@@ -33,22 +33,10 @@ def read_docx(file_path):
 
 def read_pdf(file_path):
     try:
-        text = ""
-        with pdfplumber.open(file_path) as pdf:
-            for i, page in enumerate(pdf.pages):
-                try:
-                    page_text = page.extract_text() or ""
-                    if page_text.strip():
-                        text += page_text + "\n"
-                    else:
-                        logging.info(f"[PDF EMPTY TEXT] Page {i} had no extractable text.")
-                except Exception as e:
-                    logging.warning(f"[PDFPLUMBER PAGE ERROR] Page {i} skipped due to error: {e}")
-        if not text.strip():
-            logging.warning(f"[PDFPLUMBER] No text extracted from: {file_path}")
-        return text
+        reader = PdfReader(file_path)
+        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
     except Exception as e:
-        logging.error(f"[PDFPLUMBER ERROR] Failed to read PDF {file_path}: {e}")
+        logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
 # === Helpers ===
