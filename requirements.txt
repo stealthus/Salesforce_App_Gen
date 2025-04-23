@@ -13,7 +13,4 @@ pdfplumber
 pdfminer.six
 loguru
 gunicorn
-pymupdf
-pdf2image
-pytesseract
-Pillow
+azure-ai-formrecognizer
