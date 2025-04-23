@@ -4,10 +4,11 @@ import openai
 import logging
 import requests
 from docx import Document
-from PyPDF2 import PdfReader
-from azure.storage.filedatalake import DataLakeServiceClient
+from azure.storage.filedatalake import DataLakeServiceClient, DataLakeFileClient
+from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.core.credentials import AzureKeyCredential
 import tempfile
-import pdfplumber
+import io
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -31,24 +32,39 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
-def read_pdf(file_path):
-    filename = os.path.basename(file_path)
+def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
     try:
-        logging.info(f"[ACCESSING PDF] Reading: {filename}")
-        text = ""
-        with pdfplumber.open(file_path) as pdf:
-            for i, page in enumerate(pdf.pages):
-                try:
-                    page_text = page.extract_text() or ""
-                    if page_text.strip():
-                        text += page_text + "\n"
-                    else:
-                        logging.warning(f"[EMPTY PAGE] {filename} - Page {i + 1}")
-                except Exception as page_error:
-                    logging.warning(f"[PAGE ERROR] {filename} - Page {i + 1}: {page_error}")
-        if not text.strip():
-            logging.warning(f"[NO TEXT EXTRACTED] {filename}")
-        return text
+        endpoint = os.getenv("AZURE_FORM_RECOGNIZER_ENDPOINT")
+        key = os.getenv("AZURE_FORM_RECOGNIZER_KEY")
+        client = DocumentAnalysisClient(endpoint, AzureKeyCredential(key))
+
+        poller = client.begin_analyze_document("prebuilt-document", document=pdf_bytes)
+        result = poller.result()
+
+        extracted_text = []
+        for page in result.pages:
+            for line in page.lines:
+                extracted_text.append(line.content)
+
+        for table in result.tables:
+            extracted_text.append("\n--- Table ---")
+            for cell in table.cells:
+                extracted_text.append(f"Cell[{cell.row_index},{cell.column_index}]: {cell.content}")
+
+        logging.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
+        return "\n".join(extracted_text)
+    except Exception as e:
+        logging.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
+        return ""
+
+def read_pdf(filename):
+    try:
+        filesystem = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
+        service_client = get_datalake_service_client()
+        file_client = service_client.get_file_system_client(filesystem).get_file_client(filename)
+        logging.info(f"[ACCESSING PDF FROM DATALAKE] Reading: {filename}")
+        pdf_bytes = file_client.download_file().readall()
+        return analyze_pdf_with_ai(pdf_bytes, filename)
     except Exception as e:
         logging.error(f"[READ FAILURE] {filename} => {e}")
         return ""
@@ -123,7 +139,7 @@ def read_files_from_datalake():
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                     tmp.write(file_contents)
                     tmp.flush()
-                    text = read_pdf(tmp.name) if filename.endswith(".pdf") else read_docx(tmp.name)
+                    text = read_pdf(path.name) if filename.endswith(".pdf") else read_docx(tmp.name)
 
                 if text.strip():
                     documents.append({"filename": filename, "text": text})
@@ -141,7 +157,76 @@ def read_files_from_datalake():
         logging.error(f"[DATA LAKE READ ERROR] {e}")
         return []
 
-# === Logic ===
+# === Proposal Generation ===
+def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
+    try:
+        summarized_requirements = summarize_text(requirements_text, 800)
+        logging.info("[SUMMARY] Requirements summary created.")
+
+        azure_context = ""
+        if docs_info:
+            relevant_azure_texts = []
+            for doc in docs_info:
+                full_text = doc.get("text", "")
+                filename = doc.get("filename", "Unknown")
+                if not full_text.strip():
+                    continue
+                if any(term.lower() in full_text.lower() for term in summarized_requirements.split()[:30]):
+                    relevant_azure_texts.append((filename, full_text))
+                    logging.info(f"[MATCH] {filename} matched summarized requirements.")
+            if relevant_azure_texts:
+                azure_context = "\n\n".join([text for _, text in relevant_azure_texts])[:8000]
+            else:
+                logging.warning("[AZURE] No relevant Azure documents found.")
+                azure_context = "No relevant documents found in the Azure repository."
+
+        internet_data = ""
+        if use_internet:
+            logging.info("[MODE] Internet ON – Retrieving external context.")
+            serp_results = serpapi_search(summarized_requirements)
+            for result in serp_results:
+                title = result.get("title", "")
+                snippet = result.get("snippet", "")
+                link = result.get("link", "")
+                summary = summarize_text(f"{title} - {snippet}", 150)
+                internet_data += (
+                    f"Source: {link}\n"
+                    f"Title: {title}\n"
+                    f"Snippet: {snippet}\n"
+                    f"Summary: {summary}\n\n"
+                )
+
+        prompt_sections = [
+            f"# User Prompt\n{user_prompt.strip()}",
+            f"# Requirements Summary\n{summarized_requirements.strip()}"
+        ]
+
+        if azure_context:
+            prompt_sections.append(f"# Azure Repository Insights\n{azure_context.strip()}")
+        if internet_data.strip():
+            prompt_sections.append(f"# Internet Findings\n{internet_data.strip()}")
+
+        full_prompt = "\n\n".join(prompt_sections)
+
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise software integrations."},
+                {"role": "user", "content": full_prompt}
+            ],
+            max_tokens=3500,
+            temperature=0.7
+        )
+
+        result = response.choices[0].message.content.strip()
+        logging.info(f"[SUCCESS] Proposal generated. Preview: {result[:200]}...")
+        return result
+
+    except Exception as e:
+        logging.error(f"[ERROR] Failed to generate comprehensive proposal: {e}")
+        return "Unable to generate a response due to an internal error."
+
+# === Question Answering from Document ===
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
     for i, chunk in enumerate(chunks):
@@ -171,105 +256,3 @@ If the answer is not found, say: "The answer is not available in the document."
         except Exception as e:
             logging.error(f"[QA ERROR Chunk {i+1}] {e}")
     return "The answer is not available in the document."
-
-def generate_solution_from_prompt(document_text, user_prompt):
-    try:
-        chunks = chunk_text(document_text)
-        context = "\n".join(chunks[:3])
-        final_prompt = user_prompt.replace("{{document_content}}", context)
-
-        response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You are a Salesforce integration expert."},
-                {"role": "user", "content": final_prompt}
-            ],
-            max_tokens=3500,
-            temperature=0.7
-        )
-        result = response.choices[0].message.content.strip()
-        logging.info(f"[PROPOSAL OK] First 200 characters:\n{result[:200]}...")
-        return result
-    except Exception as e:
-        logging.error(f"[OpenAI PROPOSAL ERROR] {e}")
-        return "Proposal generation failed."
-
-def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
-    try:
-        # === Step 1: Summarize uploaded requirements document ===
-        if not requirements_text.strip():
-            logging.warning("[EMPTY] Requirements text is missing.")
-            return "The uploaded requirements document is empty."
-
-        summarized_requirements = summarize_text(requirements_text, 800)
-        logging.info(f"[SUMMARY] Requirements summary created.")
-
-        # === Step 2: Search Azure Data Lake for relevant documents ===
-        relevant_azure_texts = []
-        for doc in docs_info:
-            full_text = doc.get("text", "")
-            filename = doc.get("filename", "Unknown")
-            if not full_text.strip():
-                continue
-
-            if any(term.lower() in full_text.lower() for term in summarized_requirements.split()[:30]):
-                relevant_azure_texts.append((filename, full_text))
-                logging.info(f"[MATCH] {filename} matched summarized requirements.")
-
-        if not relevant_azure_texts:
-            logging.warning("[AZURE] No relevant Azure documents found based on summarized requirements.")
-            azure_context = "No relevant documents found in the Azure repository."
-        else:
-            # Merge relevant texts (limit length)
-            azure_context = "\n\n".join([text for _, text in relevant_azure_texts])[:8000]
-
-        # === Step 3: If enabled, gather internet content ===
-        internet_data = ""
-        if use_internet:
-            logging.info("[MODE] Internet ON – Retrieving external context.")
-            serp_results = serpapi_search(summarized_requirements)
-            for result in serp_results:
-                title = result.get("title", "")
-                snippet = result.get("snippet", "")
-                link = result.get("link", "")
-                summary = summarize_text(f"{title} - {snippet}", 150)
-                internet_data += (
-                    f"Source: {link}\n"
-                    f"Title: {title}\n"
-                    f"Snippet: {snippet}\n"
-                    f"Summary: {summary}\n\n"
-                )
-        else:
-            logging.info("[MODE] Internet OFF – Using only internal documents.")
-
-        # === Step 4: Compose final prompt for OpenAI ===
-        prompt_sections = [
-            f"# User Prompt\n{user_prompt.strip()}",
-            f"# Requirements Summary\n{summarized_requirements.strip()}",
-            f"# Azure Repository Insights\n{azure_context.strip()}"
-        ]
-
-        if use_internet and internet_data.strip():
-            prompt_sections.append(f"# Internet Findings\n{internet_data.strip()}")
-
-        full_prompt = "\n\n".join(prompt_sections)
-
-        # === Step 5: Generate response using OpenAI ===
-        response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise software integrations."},
-                {"role": "user", "content": full_prompt}
-            ],
-            max_tokens=3500,
-            temperature=0.7
-        )
-
-        result = response.choices[0].message.content.strip()
-        logging.info(f"[SUCCESS] Proposal generated. Preview: {result[:200]}...")
-        return result
-
-    except Exception as e:
-        logging.error(f"[ERROR] Failed to generate comprehensive proposal: {e}")
-        return "Unable to generate a response due to an internal error."
-
