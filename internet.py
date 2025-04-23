@@ -7,7 +7,7 @@ from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 import tempfile
-
+import pdfplumber
 
 # === Logging Setup ===
 logging.basicConfig(
