@@ -34,9 +34,26 @@ def read_docx(file_path):
 def read_pdf(file_path):
     try:
         reader = PdfReader(file_path)
-        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")  # Adjust if a password is needed
+            except Exception as e:
+                logging.warning(f"[PDF ENCRYPTION] Unable to decrypt {file_path}: {e}")
+                return ""
+
+        text = []
+        for i, page in enumerate(reader.pages):
+            try:
+                content = page.extract_text()
+                if content:
+                    text.append(content)
+            except Exception as e:
+                logging.warning(f"[PDF PAGE ERROR] Page {i} skipped: {e}")
+        return "\n".join(text)
+
     except Exception as e:
-        logging.error(f"[PDF READ ERROR] {e}")
+        logging.error(f"[PDF READ ERROR] Failed to read {file_path}: {e}")
         return ""
 
 # === Helpers ===
