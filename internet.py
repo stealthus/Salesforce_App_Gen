@@ -8,6 +8,7 @@ from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 import tempfile
 import fitz
+import pdfplumber
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -31,49 +32,31 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
-def read_pdf(file_path):
-    text = ""
-
-    # === Step 1: Try with PyPDF2 ===
+def read_pdf(file_path, filename="unknown.pdf"):
     try:
-        logging.info("[PDF PARSE] Trying with PyPDF2...")
-        reader = PdfReader(file_path)
-        for i, page in enumerate(reader.pages):
-            try:
-                page_text = page.extract_text()
-                if page_text and page_text.strip():
-                    text += page_text + "\n"
-                else:
-                    logging.info(f"[PyPDF2] Page {i} had no extractable text.")
-            except Exception as e:
-                logging.warning(f"[PyPDF2 PAGE ERROR] Page {i} failed: {e}")
-        if text.strip():
-            logging.info("[PDF PARSE] Success with PyPDF2.")
-            return text
-    except Exception as e:
-        logging.warning(f"[PyPDF2 ERROR] Entire file failed: {e}")
+        logging.info(f"[PDFPLUMBER] Starting to parse: {filename}")
+        text = ""
 
-    # === Step 2: Fallback to PyMuPDF ===
-    try:
-        logging.info("[PDF PARSE] Fallback to PyMuPDF...")
-        doc = fitz.open(file_path)
-        for i, page in enumerate(doc):
-            try:
-                page_text = page.get_text() or ""
-                if page_text.strip():
-                    text += page_text + "\n"
-                else:
-                    logging.info(f"[PyMuPDF] Page {i} had no extractable text.")
-            except Exception as e:
-                logging.warning(f"[PyMuPDF PAGE ERROR] Page {i} skipped: {e}")
-        if text.strip():
-            logging.info("[PDF PARSE] Success with PyMuPDF.")
-            return text
-    except Exception as e:
-        logging.error(f"[PyMuPDF ERROR] Failed completely: {e}")
+        with pdfplumber.open(file_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                try:
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        text += page_text + "\n"
+                        logging.info(f"[PAGE OK] {filename} - Page {i+1} extracted.")
+                    else:
+                        logging.warning(f"[PAGE EMPTY] {filename} - Page {i+1} has no text.")
+                except Exception as page_error:
+                    logging.error(f"[PAGE ERROR] {filename} - Failed to read Page {i+1}: {page_error}")
 
-    logging.warning("[PDF PARSE] No text could be extracted from the PDF.")
-    return ""
+        if not text.strip():
+            logging.warning(f"[FILE EMPTY] No extractable text found in {filename}")
+
+        return text.strip()
+
+    except Exception as e:
+        logging.error(f"[PDFPLUMBER ERROR] Failed to open {filename}: {e}")
+        return ""
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
@@ -145,7 +128,7 @@ def read_files_from_datalake():
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                     tmp.write(file_contents)
                     tmp.flush()
-                    text = read_pdf(tmp.name) if filename.endswith(".pdf") else read_docx(tmp.name)
+                    text = read_pdf(tmp.name, filename=filename) if filename.endswith(".pdf") else read_docx(tmp.name)
 
                 if text.strip():
                     documents.append({"filename": filename, "text": text})
