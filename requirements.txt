@@ -12,4 +12,4 @@ werkzeug
 pdfplumber
 pdfminer.six
 loguru
-gunicorn>=20.1.0
+gunicorn
