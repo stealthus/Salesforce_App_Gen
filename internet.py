@@ -134,7 +134,9 @@ def read_files_from_datalake():
 
             try:
                 file_client = file_system_client.get_file_client(path.name)
-                file_contents = file_client.download_file().readall()
+                stream = file_client.download_file()
+                downloaded_bytes = b"".join([chunk for chunk in stream.chunks()])
+
 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
                     tmp.write(file_contents)
