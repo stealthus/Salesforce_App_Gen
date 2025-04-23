@@ -37,23 +37,24 @@ def read_pdf(file_path):
 
         if reader.is_encrypted:
             try:
-                reader.decrypt("")  # Adjust if a password is needed
+                reader.decrypt("")  # provide a password if needed
             except Exception as e:
-                logging.warning(f"[PDF ENCRYPTION] Unable to decrypt {file_path}: {e}")
+                logging.warning(f"[PDF ENCRYPTION] Skipped encrypted file: {e}")
                 return ""
 
         text = []
         for i, page in enumerate(reader.pages):
             try:
-                content = page.extract_text()
-                if content:
-                    text.append(content)
+                page_text = page.extract_text()
+                if page_text:
+                    text.append(page_text)
             except Exception as e:
-                logging.warning(f"[PDF PAGE ERROR] Page {i} skipped: {e}")
+                logging.warning(f"[PDF PARSE ERROR] Skipping page {i}: {e}")
+
         return "\n".join(text)
 
     except Exception as e:
-        logging.error(f"[PDF READ ERROR] Failed to read {file_path}: {e}")
+        logging.error(f"[PDF READ ERROR] Entire file skipped: {e}")
         return ""
 
 # === Helpers ===
