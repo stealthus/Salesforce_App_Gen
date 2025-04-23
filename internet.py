@@ -33,28 +33,22 @@ def read_docx(file_path):
 
 def read_pdf(file_path):
     try:
-        reader = PdfReader(file_path)
-
-        if reader.is_encrypted:
-            try:
-                reader.decrypt("")  # provide a password if needed
-            except Exception as e:
-                logging.warning(f"[PDF ENCRYPTION] Skipped encrypted file: {e}")
-                return ""
-
-        text = []
-        for i, page in enumerate(reader.pages):
-            try:
-                page_text = page.extract_text()
-                if page_text:
-                    text.append(page_text)
-            except Exception as e:
-                logging.warning(f"[PDF PARSE ERROR] Skipping page {i}: {e}")
-
-        return "\n".join(text)
-
+        text = ""
+        with pdfplumber.open(file_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                try:
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        text += page_text + "\n"
+                    else:
+                        logging.info(f"[PDF EMPTY TEXT] Page {i} had no extractable text.")
+                except Exception as e:
+                    logging.warning(f"[PDFPLUMBER PAGE ERROR] Page {i} skipped due to error: {e}")
+        if not text.strip():
+            logging.warning(f"[PDFPLUMBER] No text extracted from: {file_path}")
+        return text
     except Exception as e:
-        logging.error(f"[PDF READ ERROR] Entire file skipped: {e}")
+        logging.error(f"[PDFPLUMBER ERROR] Failed to read PDF {file_path}: {e}")
         return ""
 
 # === Helpers ===
