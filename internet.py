@@ -4,12 +4,11 @@ import openai
 import logging
 import requests
 from docx import Document
-from azure.storage.filedatalake import DataLakeServiceClient
+from azure.storage.filedatalake import DataLakeServiceClient, DataLakeFileClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 import tempfile
 import io
-import re
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -24,6 +23,7 @@ openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-3.5-turbo"
 
+print("hello")
 # === File Readers ===
 def read_docx(file_path):
     try:
@@ -38,6 +38,7 @@ def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
         endpoint = os.getenv("AZURE_FORM_RECOGNIZER_ENDPOINT")
         key = os.getenv("AZURE_FORM_RECOGNIZER_KEY")
         client = DocumentAnalysisClient(endpoint, AzureKeyCredential(key))
+
         poller = client.begin_analyze_document("prebuilt-document", document=pdf_bytes)
         result = poller.result()
 
@@ -137,8 +138,9 @@ def read_files_from_datalake():
                 stream = file_client.download_file()
                 downloaded_bytes = b"".join([chunk for chunk in stream.chunks()])
 
+
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
-                    tmp.write(downloaded_bytes)
+                    tmp.write(file_contents)
                     tmp.flush()
                     text = read_pdf(path.name) if filename.endswith(".pdf") else read_docx(tmp.name)
 
@@ -164,65 +166,56 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         summarized_requirements = summarize_text(requirements_text, 800)
         logging.info("[SUMMARY] Requirements summary created.")
 
-        intent_analysis_prompt = f"""
-Determine whether the following prompt is asking only about the uploaded document, or also needs additional insights from a repository of documents.
-Respond with either:
-- document-only
-- repository-needed
-
-Prompt:
-{user_prompt.strip()}
-"""
-
-        intent_response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": intent_analysis_prompt.strip()}],
-            max_tokens=10,
-            temperature=0
-        )
-
-        intent_mode = intent_response.choices[0].message.content.strip().lower()
-        logging.info(f"[INTENT CHECK] Prompt classified as: {intent_mode}")
-
         azure_context = ""
-        if use_internet or intent_mode == "repository-needed":
-            logging.info("[AZURE] Accessing repository documents...")
-            azure_docs = read_files_from_datalake()
-            relevant_texts = []
-            for doc in azure_docs:
-                full_text = doc.get("text", "").lower()
+        if docs_info:
+            relevant_azure_texts = []
+            for doc in docs_info:
+                full_text = doc.get("text", "")
+                filename = doc.get("filename", "Unknown")
                 if not full_text.strip():
                     continue
-                summary_keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-                if any(keyword in full_text for keyword in summary_keywords):
-                    relevant_texts.append(full_text)
-                    logging.info(f"[MATCH] {doc.get('filename')} matched requirements.")
-            azure_context = "\n\n".join(relevant_texts)[:8000] if relevant_texts else "No relevant documents found in repository."
+                if any(term.lower() in full_text.lower() for term in summarized_requirements.split()[:30]):
+                    relevant_azure_texts.append((filename, full_text))
+                    logging.info(f"[MATCH] {filename} matched summarized requirements.")
+            if relevant_azure_texts:
+                azure_context = "\n\n".join([text for _, text in relevant_azure_texts])[:8000]
+            else:
+                logging.warning("[AZURE] No relevant Azure documents found.")
+                azure_context = "No relevant documents found in the Azure repository."
 
         internet_data = ""
         if use_internet:
-            logging.info("[INTERNET] Fetching results via SERP API.")
+            logging.info("[MODE] Internet ON – Retrieving external context.")
             serp_results = serpapi_search(summarized_requirements)
             for result in serp_results:
-                summary = summarize_text(f"{result.get('title')} - {result.get('snippet')}", 150)
-                internet_data += f"Source: {result.get('link')}\nTitle: {result.get('title')}\nSnippet: {result.get('snippet')}\nSummary: {summary}\n\n"
+                title = result.get("title", "")
+                snippet = result.get("snippet", "")
+                link = result.get("link", "")
+                summary = summarize_text(f"{title} - {snippet}", 150)
+                internet_data += (
+                    f"Source: {link}\n"
+                    f"Title: {title}\n"
+                    f"Snippet: {snippet}\n"
+                    f"Summary: {summary}\n\n"
+                )
 
-        prompt_parts = [
-            f"# Prompt\n{user_prompt}",
-            f"# Requirements Summary\n{summarized_requirements}"
+        prompt_sections = [
+            f"# User Prompt\n{user_prompt.strip()}",
+            f"# Requirements Summary\n{summarized_requirements.strip()}"
         ]
-        if azure_context:
-            prompt_parts.append(f"# Azure Repository Insights\n{azure_context.strip()}")
-        if internet_data:
-            prompt_parts.append(f"# Internet Findings\n{internet_data.strip()}")
 
-        full_prompt = "\n\n".join(prompt_parts)
+        if azure_context:
+            prompt_sections.append(f"# Azure Repository Insights\n{azure_context.strip()}")
+        if internet_data.strip():
+            prompt_sections.append(f"# Internet Findings\n{internet_data.strip()}")
+
+        full_prompt = "\n\n".join(prompt_sections)
 
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise integrations."},
-                {"role": "user", "content": full_prompt.strip()}
+                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise software integrations."},
+                {"role": "user", "content": full_prompt}
             ],
             max_tokens=3500,
             temperature=0.7
@@ -236,7 +229,7 @@ Prompt:
         logging.error(f"[ERROR] Failed to generate comprehensive proposal: {e}")
         return "Unable to generate a response due to an internal error."
 
-# === QA Mode ===
+# === Question Answering from Document ===
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
     for i, chunk in enumerate(chunks):
