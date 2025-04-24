@@ -14,3 +14,5 @@ pdfminer.six
 loguru
 gunicorn
 azure-ai-formrecognizer
+azure-identity
+azure-storage-file-datalake
