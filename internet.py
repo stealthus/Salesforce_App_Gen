@@ -213,6 +213,9 @@ Respond with only one of the above categories.
 
             # === If user asks a question about the document, answer from doc ===
             if mode == "question-about-uploaded-document":
+                logging.info(f"[DEBUG] Uploaded Document Content Length: {len(full_doc)}")
+                logging.info(f"[DEBUG] First 300 characters of document:\n{full_doc[:300]}")
+
                 return answer_question_from_doc(full_doc, user_prompt)
 
             # === If user seeks a solution, pull from repository ===
