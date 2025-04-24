@@ -93,7 +93,7 @@ def summarize_text(text, max_tokens=800):
         logging.error(f"[OpenAI SUMMARY ERROR] {e}")
         return "Summary failed."
 
-def serpapi_search(query, max_results=3):
+def serpapi_search(query, max_results=5):
     try:
         params = {
             "engine": "google",
@@ -105,6 +105,27 @@ def serpapi_search(query, max_results=3):
     except Exception as e:
         logging.error(f"[SERPAPI ERROR] {e}")
         return []
+
+def generate_solution_from_prompt(document_text, user_prompt):
+    try:
+        chunks = chunk_text(document_text)
+        context = "\n".join(chunks[:3])  # using first few chunks only
+        final_prompt = user_prompt.replace("{{document_content}}", context)
+
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a Salesforce integration expert."},
+                {"role": "user", "content": final_prompt}
+            ],
+            max_tokens=3500,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"[OpenAI PROPOSAL ERROR] {e}")
+        return "Proposal generation failed."
+
 
 # === Azure Data Lake Integration ===
 def get_datalake_service_client():
@@ -163,29 +184,53 @@ def read_files_from_datalake():
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
+        full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
         summarized_requirements = summarize_text(requirements_text, 800)
         logging.info("[SUMMARY] Requirements summary created.")
 
+        # === INTENT CHECK ===
+        intent_check_prompt = f"""
+You are an intelligent assistant. Does this prompt require insights ONLY from the uploaded document or also from a repository of documents or internet?
+
+Respond with one of:
+- document-only
+- repository-needed
+
+Prompt:
+{user_prompt.strip()}
+"""
+        intent_response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": intent_check_prompt.strip()}],
+            max_tokens=10,
+            temperature=0
+        )
+        intent_mode = intent_response.choices[0].message.content.strip().lower()
+        logging.info(f"[INTENT CHECK] Prompt classified as: {intent_mode}")
+
+        # === DOCUMENT-ONLY MODE ===
+        if intent_mode == "document-only" and not use_internet:
+            logging.info("[MODE] Strict document-only answer.")
+            return answer_question_from_doc(full_doc, user_prompt)
+
+        # === REPOSITORY + INTERNET MODE ===
+        logging.info("[MODE] Generating full proposal with context.")
         azure_context = ""
-        if docs_info:
-            relevant_azure_texts = []
-            for doc in docs_info:
-                full_text = doc.get("text", "")
-                filename = doc.get("filename", "Unknown")
+        if use_internet or intent_mode == "repository-needed":
+            azure_docs = read_files_from_datalake()
+            relevant_texts = []
+            summary_keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
+            for doc in azure_docs:
+                full_text = doc.get("text", "").lower()
                 if not full_text.strip():
                     continue
-                if any(term.lower() in full_text.lower() for term in summarized_requirements.split()[:30]):
-                    relevant_azure_texts.append((filename, full_text))
-                    logging.info(f"[MATCH] {filename} matched summarized requirements.")
-            if relevant_azure_texts:
-                azure_context = "\n\n".join([text for _, text in relevant_azure_texts])[:8000]
-            else:
-                logging.warning("[AZURE] No relevant Azure documents found.")
-                azure_context = "No relevant documents found in the Azure repository."
+                if any(k in full_text for k in summary_keywords):
+                    relevant_texts.append(full_text)
+                    logging.info(f"[MATCH] {doc.get('filename')} matched requirements.")
+            azure_context = "\n\n".join(relevant_texts)[:8000] if relevant_texts else "No relevant documents found in repository."
 
         internet_data = ""
         if use_internet:
-            logging.info("[MODE] Internet ON – Retrieving external context.")
             serp_results = serpapi_search(summarized_requirements)
             for result in serp_results:
                 title = result.get("title", "")
@@ -199,35 +244,35 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
                     f"Summary: {summary}\n\n"
                 )
 
+        # === COMPOSE FINAL PROMPT ===
         prompt_sections = [
             f"# User Prompt\n{user_prompt.strip()}",
-            f"# Requirements Summary\n{summarized_requirements.strip()}"
+            f"# Requirements Summary\n{summarized_requirements.strip()}",
+            f"# Document Content\n{full_doc[:8000]}"
         ]
-
         if azure_context:
             prompt_sections.append(f"# Azure Repository Insights\n{azure_context.strip()}")
-        if internet_data.strip():
+        if internet_data:
             prompt_sections.append(f"# Internet Findings\n{internet_data.strip()}")
 
-        full_prompt = "\n\n".join(prompt_sections)
+        final_prompt = "\n\n".join(prompt_sections)
 
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise software integrations."},
-                {"role": "user", "content": full_prompt}
+                {"role": "system", "content": "You are a technical expert in Salesforce and enterprise software."},
+                {"role": "user", "content": final_prompt}
             ],
             max_tokens=3500,
             temperature=0.7
         )
 
-        result = response.choices[0].message.content.strip()
-        logging.info(f"[SUCCESS] Proposal generated. Preview: {result[:200]}...")
-        return result
+        return response.choices[0].message.content.strip()
 
     except Exception as e:
         logging.error(f"[ERROR] Failed to generate comprehensive proposal: {e}")
         return "Unable to generate a response due to an internal error."
+
 
 # === Question Answering from Document ===
 def answer_question_from_doc(document_text, user_question):
