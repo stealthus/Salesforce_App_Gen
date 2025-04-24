@@ -39,7 +39,7 @@ def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
         key = os.getenv("AZURE_FORM_RECOGNIZER_KEY")
         client = DocumentAnalysisClient(endpoint, AzureKeyCredential(key))
 
-        poller = client.begin_analyze_document("prebuilt-document", document=pdf_bytes)
+        poller = client.begin_analyze_document("prebuilt-document", document=pdf_bytes, content_type="application/pdf")
         result = poller.result()
 
         extracted_text = []
