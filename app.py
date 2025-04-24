@@ -82,6 +82,7 @@ def serve_react(path):
     else:
         return send_from_directory(app.static_folder, "index.html")
 
+print("hello")
 
 # === Azure-friendly WSGI setup
 if __name__ != "__main__":
