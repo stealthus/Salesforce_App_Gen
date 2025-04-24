@@ -23,6 +23,7 @@ openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-3.5-turbo"
 
+print("hello")
 # === File Readers ===
 def read_docx(file_path):
     try:
