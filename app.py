@@ -1,95 +1,111 @@
-from flask import Flask, request, send_file, jsonify, make_response, send_from_directory
+from flask import Flask, request, jsonify, make_response, send_from_directory
 from flask_cors import CORS
-import os
-import tempfile
-from internet import read_docx, read_pdf, generate_comprehensive_proposal
-from fpdf import FPDF
 from werkzeug.middleware.proxy_fix import ProxyFix
+from fpdf import FPDF
+import os
+import sys
+import tempfile
 import logging
 
-# === App Setup ===
+from internet import read_files_from_datalake, generate_comprehensive_proposal
+
+# === Logging Configuration ===
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    stream=sys.stdout
+)
+logger = logging.getLogger()
+logger.addHandler(logging.StreamHandler(sys.stdout))
+
+# === Flask App Initialization ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
 CORS(app)
-logging.basicConfig(level=logging.INFO)
 
+# === Main Endpoint ===
 @app.route("/generate", methods=["POST"])
 def generate_proposal():
+    logger.info("[START] /generate called")
+
     try:
-        uploaded_file = request.files.get("file")
+        # === Retrieve Request Data ===
         user_prompt = request.form.get("prompt")
-        use_internet = request.form.get("use_internet") == 'true'
+        use_internet = request.form.get("use_internet") == "true"
 
-        if not uploaded_file or not user_prompt:
-            return jsonify({"error": "Missing file or prompt"}), 400
+        logger.info(f"[PROMPT] Received: {user_prompt}")
+        logger.info(f"[INTERNET] Enabled: {use_internet}")
 
-        # === Save uploaded file temporarily
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = os.path.join(tmpdir, uploaded_file.filename)
-            uploaded_file.save(file_path)
+        if not user_prompt:
+            logger.warning("[WARN] Missing prompt")
+            return jsonify({"error": "Missing prompt"}), 400
 
-            # === Read document
-            ext = os.path.splitext(uploaded_file.filename)[1].lower()
-            if ext == ".docx":
-                document_text = read_docx(file_path)
-            elif ext == ".pdf":
-                document_text = read_pdf(file_path)
-            else:
-                return jsonify({"error": "Unsupported file format. Upload a .docx or .pdf file."}), 400
+        # === Read from Azure Data Lake (Always — no conditional check) ===
+        docs_info = read_files_from_datalake()
 
-            if not document_text.strip():
-                return jsonify({"error": "The uploaded document could not be parsed or is empty."}), 400
+        logger.info(f"[FILES] Documents retrieved: {len(docs_info)}")
 
-            # === Wrap into docs_info for compatibility
-            docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
+        # === Extract Document Content (only for logs — not used directly) ===
+        document_text = "\n".join([doc.get("text", "") for doc in docs_info])
+        logger.info(f"[CONTENT] Total length: {len(document_text)} characters")
 
-            logging.info("[DEBUG] Calling generate_comprehensive_proposal()")
-            result = generate_comprehensive_proposal(document_text, docs_info, user_prompt, use_internet)
+        # === Generate Proposal ===
+        result = generate_comprehensive_proposal(
+            requirements_text=document_text,
+            docs_info=docs_info,
+            user_prompt=user_prompt,
+            use_internet=use_internet
+        )
+        logger.info(f"[RESULT] Preview: {result[:300]}")
 
-            # === Create response PDF
-            pdf_stream = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            for line in result.split("\n"):
-                try:
-                    pdf.multi_cell(0, 10, line.encode("latin-1", "ignore").decode("latin-1"))
-                except Exception as e:
-                    logging.error(f"[PDF ERROR] Could not add line to PDF: {e}")
-            pdf.output(pdf_stream.name)
-            pdf_stream.close()
+        # === Append Document Sources ===
+        sources_used = "\n".join([f"- {doc['filename']}" for doc in docs_info])
+        result += f"\n\n---\n📁 Sources Referenced:\n{sources_used}"
 
-            # === Return the PDF file
-            with open(pdf_stream.name, "rb") as f:
+        # === Create PDF ===
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+
+        for line in result.split("\n"):
+            try:
+                encoded_line = line.encode("latin-1", "ignore").decode("latin-1")
+                pdf.multi_cell(0, 10, encoded_line)
+            except Exception as e:
+                logger.error(f"[PDF ERROR] Encoding line failed: {e}")
+
+        # === Write to Temp File ===
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+            pdf.output(tmp_pdf.name)
+            tmp_pdf.close()
+            with open(tmp_pdf.name, "rb") as f:
                 pdf_bytes = f.read()
-            os.unlink(pdf_stream.name)
+            os.unlink(tmp_pdf.name)
 
-            response = make_response(pdf_bytes)
-            response.headers.set('Content-Type', 'application/pdf')
-            response.headers.set('Content-Disposition', 'attachment', filename='Generated_Proposal.pdf')
-            return response
+        # === Return PDF Response ===
+        response = make_response(pdf_bytes)
+        response.headers.set("Content-Type", "application/pdf")
+        response.headers.set("Content-Disposition", "attachment", filename="Generated_Proposal.pdf")
+        logger.info("[SUCCESS] Proposal PDF created and sent")
+        return response
 
     except Exception as e:
-        logging.exception("Internal server error:")
+        logger.exception("[ERROR] Failed to generate proposal")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
-
-# === Serve React Frontend
+# === Frontend Route Handling ===
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_react(path):
-    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+    target_path = os.path.join(app.static_folder, path)
+    if path != "" and os.path.exists(target_path):
         return send_from_directory(app.static_folder, path)
-    else:
-        return send_from_directory(app.static_folder, "index.html")
+    return send_from_directory(app.static_folder, "index.html")
 
-print("hello")
-
-# === Azure-friendly WSGI setup
+# === Production WSGI Support ===
 if __name__ != "__main__":
     app.wsgi_app = ProxyFix(app.wsgi_app)
 
-# === Local dev server
+# === Local Development Run ===
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    logging.info(f"[INFO] Starting Flask server on port {port}...")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    print("[INFO] Starting Flask server with latest code...")
+    app.run(debug=True)
