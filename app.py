@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, make_response, send_from_directory
+from flask import Flask, request, jsonify, make_response, send_from_directory, send_file
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from fpdf import FPDF
@@ -6,8 +6,14 @@ import os
 import sys
 import tempfile
 import logging
-import io 
-from internet import read_files_from_datalake, generate_comprehensive_proposal, analyze_pdf_with_ai, read_pdf, read_docx
+import io
+from internet import (
+    read_files_from_datalake,
+    generate_comprehensive_proposal,
+    analyze_pdf_with_ai,
+    read_pdf,
+    read_docx
+)
 
 # === Logging Configuration ===
 logging.basicConfig(
@@ -30,32 +36,35 @@ def generate_proposal():
         user_prompt = request.form.get("prompt", "")
         use_internet = request.form.get("use_internet", "false").lower() == "true"
 
-        logging.info("[START] /generate called")
-        logging.info(f"[PROMPT] Received: {user_prompt}")
-        logging.info(f"[INTERNET] Enabled: {use_internet}")
+        logger.info("[START] /generate called")
+        logger.info(f"[PROMPT] Received: {user_prompt}")
+        logger.info(f"[INTERNET] Enabled: {use_internet}")
 
         if not uploaded_file or uploaded_file.filename == "":
             return jsonify({"error": "No file uploaded"}), 400
 
         filename = uploaded_file.filename.lower()
-        pdf_bytes = uploaded_file.read()
-        logging.info(f"[FILE] Uploaded: {filename} | Size: {len(pdf_bytes)} bytes")
+        file_bytes = uploaded_file.read()
+        logger.info(f"[FILE] Uploaded: {filename} | Size: {len(file_bytes)} bytes")
 
         if filename.endswith(".pdf"):
-            requirements_text = analyze_pdf_with_ai(io.BytesIO(pdf_bytes), filename)
+            requirements_text = analyze_pdf_with_ai(io.BytesIO(file_bytes), filename)
         elif filename.endswith(".docx"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-                tmp.write(pdf_bytes)
+                tmp.write(file_bytes)
                 tmp.flush()
                 requirements_text = read_docx(tmp.name)
         else:
-            requirements_text = pdf_bytes.decode("utf-8", errors="ignore")
+            requirements_text = file_bytes.decode("utf-8", errors="ignore")
 
         if not requirements_text.strip():
-            logging.warning("[WARNING] Extracted document text is empty.")
+            logger.warning("[WARNING] Extracted document text is empty.")
+        else:
+            logger.info(f"[UPLOAD] Extracted {len(requirements_text)} characters from uploaded document")
 
         # === Get supporting docs from Azure ===
         docs_info = read_files_from_datalake()
+        logger.info(f"[FILES] Repository documents retrieved: {len(docs_info)}")
 
         # === Generate proposal ===
         final_output = generate_comprehensive_proposal(
@@ -65,22 +74,27 @@ def generate_proposal():
             use_internet=use_internet
         )
 
-        # === Return as PDF ===
+        # === Create PDF using a Temporary File ===
         pdf = FPDF()
         pdf.add_page()
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.set_font("Arial", size=12)
         for line in final_output.split("\n"):
             pdf.multi_cell(0, 10, line)
-        pdf_bytes_io = io.BytesIO()
-        pdf.output(pdf_bytes_io)
-        pdf_bytes_io.seek(0)
 
-        logging.info("[SUCCESS] Proposal PDF created and sent")
-        return send_file(pdf_bytes_io, download_name="Generated_Proposal.pdf", as_attachment=True)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+            pdf.output(tmp_pdf.name)
+            tmp_pdf.close()
+
+            with open(tmp_pdf.name, "rb") as f:
+                pdf_bytes = f.read()
+            os.unlink(tmp_pdf.name)
+
+        logger.info("[SUCCESS] Proposal PDF created and sent")
+        return send_file(io.BytesIO(pdf_bytes), download_name="Generated_Proposal.pdf", as_attachment=True)
 
     except Exception as e:
-        logging.exception("[ERROR] Failed to generate proposal")
+        logger.exception("[ERROR] Failed to generate proposal")
         return jsonify({"error": "Internal server error"}), 500
 
 # === Frontend Route Handling ===
