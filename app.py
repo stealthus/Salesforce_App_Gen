@@ -5,6 +5,8 @@ from fpdf import FPDF
 import os
 import tempfile
 import logging
+import re
+import io
 from internet import read_docx, read_pdf, generate_comprehensive_proposal
 
 # === App Setup ===
