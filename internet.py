@@ -1,29 +1,21 @@
 import os
-import sys
 import openai
 import logging
 import requests
 from docx import Document
-from azure.storage.filedatalake import DataLakeServiceClient, DataLakeFileClient
-from azure.ai.formrecognizer import DocumentAnalysisClient
-from azure.core.credentials import AzureKeyCredential
-import tempfile
-import io
-import re 
-# === Logging Setup ===
-logging.basicConfig(
-    level=logging.INFO,
-    stream=sys.stdout,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+from PyPDF2 import PdfReader
+from azure.storage.filedatalake import DataLakeServiceClient
+import re
 
-# === Environment Variables ===
+# === Logging ===
+logging.basicConfig(level=logging.INFO)
+
+# === API Keys ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-3.5-turbo"
 
-print("hello")
+MODEL = "gpt-3.5-turbo"
+print("Reading...")
 # === File Readers ===
 def read_docx(file_path):
     try:
@@ -33,48 +25,45 @@ def read_docx(file_path):
         logging.error(f"[DOCX READ ERROR] {e}")
         return ""
 
-def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
+def read_pdf(file_path):
     try:
-        endpoint = os.getenv("AZURE_FORM_RECOGNIZER_ENDPOINT")
-        key = os.getenv("AZURE_FORM_RECOGNIZER_KEY")
-        client = DocumentAnalysisClient(endpoint, AzureKeyCredential(key))
-
-        poller = client.begin_analyze_document("prebuilt-document", document=pdf_bytes, content_type="application/pdf")
-        result = poller.result()
-
-        extracted_text = []
-        for page in result.pages:
-            for line in page.lines:
-                extracted_text.append(line.content)
-
-        for table in result.tables:
-            extracted_text.append("\n--- Table ---")
-            for cell in table.cells:
-                extracted_text.append(f"Cell[{cell.row_index},{cell.column_index}]: {cell.content}")
-
-        logging.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
-        return "\n".join(extracted_text)
+        reader = PdfReader(file_path)
+        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
     except Exception as e:
-        logging.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
+        logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
-def read_pdf(filename):
+# === Azure Setup ===
+def read_files_from_datalake():
     try:
-        filesystem = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
-        service_client = get_datalake_service_client()
-        file_client = service_client.get_file_system_client(filesystem).get_file_client(filename)
-        logging.info(f"[ACCESSING PDF FROM DATALAKE] Reading: {filename}")
-        pdf_bytes = file_client.download_file().readall()
-        return analyze_pdf_with_ai(pdf_bytes, filename)
+        account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+        account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+        filesystem = os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
+
+        service_client = DataLakeServiceClient(
+            account_url=f"https://{account_name}.dfs.core.windows.net",
+            credential=account_key
+        )
+        file_system_client = service_client.get_file_system_client(filesystem)
+        paths = file_system_client.get_paths()
+
+        docs = []
+        for path in paths:
+            if path.is_directory:
+                continue
+            file_client = file_system_client.get_file_client(path.name)
+            content = file_client.download_file().readall().decode("utf-8", errors="ignore")
+            docs.append({"filename": path.name, "text": content})
+        return docs
     except Exception as e:
-        logging.error(f"[READ FAILURE] {filename} => {e}")
-        return ""
+        logging.error(f"[DATALAKE ERROR] {e}")
+        return []
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
     words = text.split()
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
-print("")
+
 def summarize_text(text, max_tokens=800):
     try:
         response = openai.ChatCompletion.create(
@@ -87,7 +76,7 @@ def summarize_text(text, max_tokens=800):
             temperature=0.5
         )
         summary = response.choices[0].message.content.strip()
-        logging.info(f"[SUMMARY OK] {summary[:200]}...")
+        logging.info(f"[SUMMARY OK] {summary[:300]}...")
         return summary
     except Exception as e:
         logging.error(f"[OpenAI SUMMARY ERROR] {e}")
@@ -106,103 +95,52 @@ def serpapi_search(query, max_results=5):
         logging.error(f"[SERPAPI ERROR] {e}")
         return []
 
-def generate_solution_from_prompt(document_text, user_prompt):
-    try:
-        chunks = chunk_text(document_text)
-        context = "\n".join(chunks[:3])  # using first few chunks only
-        final_prompt = user_prompt.replace("{{document_content}}", context)
-
-        response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You are a Salesforce integration expert."},
-                {"role": "user", "content": final_prompt}
-            ],
-            max_tokens=3500,
-            temperature=0.7
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logging.error(f"[OpenAI PROPOSAL ERROR] {e}")
-        return "Proposal generation failed."
-
-
-# === Azure Data Lake Integration ===
-def get_datalake_service_client():
-    account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-    account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
-    return DataLakeServiceClient(
-        account_url=f"https://{account_name}.dfs.core.windows.net",
-        credential=account_key
-    )
-
-def read_files_from_datalake():
-    ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-    ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
-    FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
-
-    service_client = DataLakeServiceClient(
-        account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
-        credential=ACCOUNT_KEY
-    )
-    file_system_client = service_client.get_file_system_client(FILESYSTEM_NAME)
-    paths = file_system_client.get_paths()
-
-    docs = []
-
-    for path in paths:
+# === Question Answering ===
+def answer_question_from_doc(document_text, user_question):
+    chunks = chunk_text(document_text)
+    for i, chunk in enumerate(chunks):
         try:
-            if path.is_directory:
-                continue
+            logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
+            prompt = f"""
+You are a helpful assistant. Answer the question strictly using the document content below.
 
-            file_path = path.name
-            logging.info(f"[READING] {file_path}")
-            file_client = file_system_client.get_file_client(file_path)
+Document:
+\"\"\"{chunk}\"\"\"
 
-            download = file_client.download_file()
-            bytes_data = download.readall()
+Question:
+{user_question}
 
-            # === Handle PDF ===
-            if file_path.lower().endswith(".pdf"):
-                file_contents = analyze_pdf_with_ai(io.BytesIO(bytes_data), filename=file_path)
-
-            # === Handle TXT, DOCX, or Fallback ===
-            elif file_path.lower().endswith(".docx"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-                    tmp.write(bytes_data)
-                    tmp.flush()
-                    file_contents = read_docx(tmp.name)
-            else:
-                file_contents = bytes_data.decode("utf-8", errors="ignore")
-
-            docs.append({
-                "filename": file_path,
-                "text": file_contents
-            })
-
+If the answer is not found, say: "The answer is not available in the document."
+"""
+            response = openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=400,
+                temperature=0.2
+            )
+            answer = response.choices[0].message.content.strip()
+            if "not available" not in answer.lower():
+                return answer
         except Exception as e:
-            logging.error(f"[FAIL READ] {file_path} => {e}")
+            logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
+    return "The answer is not available in the document."
 
-    return docs
-
-# === Proposal Generation ===
+# === Main Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
+        summarized_requirements = summarize_text(requirements_text, 800)
         full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
 
-        # === Always summarize uploaded document ===
-        summarized_requirements = summarize_text(requirements_text, 800)
-
-        # === Determine the user's intent ===
+        # === Infer Intent ===
         intent_prompt = f"""
-You are a smart assistant. Classify this user prompt into one of the following categories:
-- question-about-uploaded-document: The user is asking a question based on the uploaded document.
-- solution-needed-from-repo: The user is seeking a solution, proposal, or design, not just Q&A.
+Classify this prompt into one of the following:
+- question-about-uploaded-document
+- solution-needed-from-repo
+- full-context
+
 Prompt:
 {user_prompt.strip()}
-Respond with only one of the above categories.
 """
-
         intent_response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[{"role": "user", "content": intent_prompt.strip()}],
@@ -212,63 +150,38 @@ Respond with only one of the above categories.
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Mode selected: {mode}")
 
-        # === CASE 1: User asks a question based on uploaded document ===
+        # === Mode: Answer strictly from uploaded document ===
         if mode == "question-about-uploaded-document":
-            logging.info("[MODE] Mode: question-about-uploaded-document")
-
-            logging.info(f"[DEBUG] Uploaded Document Content Length: {len(requirements_text)}")
-            logging.info(f"[DEBUG] First 300 characters of document:\n{requirements_text[:300]}")
-
-            # Summarize and log to prove comprehension
-            summary = summarize_text(requirements_text, max_tokens=600)
-            logging.info(f"[SUMMARY] {summary[:300]}...")
-
-            # Log every meaningful line from the uploaded document
-            lines = requirements_text.strip().splitlines()
-            for i, line in enumerate(lines):
-                if line.strip():
-                    logging.info(f"[DOC LINE {i+1}] {line.strip()[:100]}")
-
-            # Combine context and answer
+            logging.info("[MODE] Answering using uploaded document only.")
+            summary = summarize_text(requirements_text, 600)
             combined_context = f"Summary:\n{summary}\n\nFull Document:\n{requirements_text}"
-            answer = answer_question_from_doc(combined_context, user_prompt)
-            logging.info(f"[RESULT] Preview: {answer[:300]}")
-            return answer
+            return answer_question_from_doc(combined_context, user_prompt)
 
-        # === CASE 2: User needs a solution using repository data (no internet) ===
-        elif mode == "solution-needed-from-repo" and not use_internet:
-            logging.info("[MODE] Building solution using repo + uploaded requirements (no internet)")
-
+        # === Mode: Generate solution using repository only ===
+        if mode == "solution-needed-from-repo" and not use_internet:
+            logging.info("[MODE] Building solution using repository and uploaded document (no internet).")
             azure_docs = read_files_from_datalake()
             keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-
-            matches = []
-            for doc in azure_docs:
-                content = doc.get("text", "").lower()
-                if any(k in content for k in keywords):
-                    matches.append(doc.get("text", ""))
-                    logging.info(f"[MATCH] {doc.get('filename')} relevant to problem statement.")
-
-            repo_insights = "\n\n".join(matches)[:8000] if matches else "No repository matches found."
+            matches = [doc["text"] for doc in azure_docs if any(k in doc["text"].lower() for k in keywords)]
+            repo_insights = "\n\n".join(matches[:3]) if matches else "No relevant repository content found."
 
             final_prompt = f"""
-# User Prompt
-{user_prompt.strip()}
+# Prompt
+{user_prompt}
 
 # Requirements Summary
-{summarized_requirements.strip()}
+{summarized_requirements}
 
-# Uploaded Document Content
-{requirements_text.strip()}
+# Uploaded Document
+{requirements_text}
 
 # Repository Insights
 {repo_insights}
 """
-
             response = openai.ChatCompletion.create(
                 model=MODEL,
                 messages=[
-                    {"role": "system", "content": "You are a technical expert designing Salesforce solutions."},
+                    {"role": "system", "content": "You are a technical expert integrating Salesforce solutions."},
                     {"role": "user", "content": final_prompt}
                 ],
                 max_tokens=3500,
@@ -276,97 +189,50 @@ Respond with only one of the above categories.
             )
             return response.choices[0].message.content.strip()
 
-        # === CASE 3: Use full context – document + repo + internet ===
-        else:
-            logging.info("[MODE] Full-context mode: using document, repository, and internet.")
+        # === Mode: Full Context — Internet + Repository ===
+        logging.info("[MODE] Using document + repository + internet.")
+        azure_docs = read_files_from_datalake()
+        keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
+        matches = [doc["text"] for doc in azure_docs if any(k in doc["text"].lower() for k in keywords)]
+        repo_insights = "\n\n".join(matches[:3]) if matches else "No relevant repository content found."
 
-            # Step 1: SERP search
+        internet_data = ""
+        if use_internet:
             serp_results = serpapi_search(summarized_requirements)
-            internet_data = ""
             for result in serp_results:
-                title = result.get("title", "")
-                snippet = result.get("snippet", "")
-                link = result.get("link", "")
-                summary = summarize_text(f"{title} - {snippet}", 150)
-                internet_data += f"Source: {link}\nTitle: {title}\nSnippet: {snippet}\nSummary: {summary}\n\n"
+                snippet_summary = summarize_text(
+                    f"{result.get('title')} - {result.get('snippet')}", 150
+                )
+                internet_data += f"Source: {result.get('link')}\nTitle: {result.get('title')}\nSnippet: {result.get('snippet')}\nSummary: {snippet_summary}\n\n"
 
-            # Step 2: Repository matching
-            azure_docs = read_files_from_datalake()
-            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-            matches = []
-            for doc in azure_docs:
-                content = doc.get("text", "").lower()
-                if any(k in content for k in keywords):
-                    matches.append(doc.get("text", ""))
-                    logging.info(f"[MATCH] {doc.get('filename')} relevant.")
-            repo_insights = "\n\n".join(matches)[:8000] if matches else "No repository matches found."
-
-            # Step 3: Final prompt
-            final_prompt = f"""
+        final_prompt = f"""
 # Prompt
-{user_prompt.strip()}
+{user_prompt}
 
 # Requirements Summary
-{summarized_requirements.strip()}
+{summarized_requirements}
 
-# Uploaded Document Content
-{requirements_text.strip()}
+# Uploaded Document
+{requirements_text}
 
 # Repository Insights
 {repo_insights}
 
 # Internet Insights
-{internet_data.strip()}
+{internet_data}
 """
 
-            response = openai.ChatCompletion.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a Salesforce and enterprise architecture expert."},
-                    {"role": "user", "content": final_prompt}
-                ],
-                max_tokens=3500,
-                temperature=0.7
-            )
-            return response.choices[0].message.content.strip()
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a Salesforce and enterprise systems expert."},
+                {"role": "user", "content": final_prompt}
+            ],
+            max_tokens=3500,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
 
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
-
-
-def answer_question_from_doc(document_text, user_question):
-    chunks = chunk_text(document_text)
-    for i, chunk in enumerate(chunks):
-        try:
-            logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
-
-            prompt = f"""
-You are a helpful assistant. Answer the question strictly using the document content below.
-
-Document:
-\"\"\"
-{chunk}
-\"\"\"
-
-Question:
-{user_question}
-
-If the answer is not found, say: "The answer is not available in the document."
-"""
-
-            response = openai.ChatCompletion.create(
-                model=MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
-                temperature=0.2
-            )
-
-            answer = response.choices[0].message.content.strip()
-            if "not available" not in answer.lower() and "not found" not in answer.lower():
-                return answer  # Return first valid answer found
-
-        except Exception as e:
-            logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
-
-    return "The answer is not available in the document."
