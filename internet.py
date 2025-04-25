@@ -189,9 +189,11 @@ def read_files_from_datalake():
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
         full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
+
+        # === Always summarize uploaded document ===
         summarized_requirements = summarize_text(requirements_text, 800)
 
-        # === Use OpenAI to infer intent smartly ===
+        # === Determine the user's intent ===
         intent_prompt = f"""
 You are a smart assistant. Classify this user prompt into one of the following categories:
 - question-about-uploaded-document: The user is asking a question based on the uploaded document.
@@ -210,28 +212,35 @@ Respond with only one of the above categories.
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Mode selected: {mode}")
 
-        # === If user asks a question about the document, answer from doc ===
+        # === CASE 1: User asks a question based on uploaded document ===
         if mode == "question-about-uploaded-document":
             logging.info("[MODE] Mode: question-about-uploaded-document")
 
             logging.info(f"[DEBUG] Uploaded Document Content Length: {len(requirements_text)}")
             logging.info(f"[DEBUG] First 300 characters of document:\n{requirements_text[:300]}")
 
+            # Summarize and log to prove comprehension
             summary = summarize_text(requirements_text, max_tokens=600)
             logging.info(f"[SUMMARY] {summary[:300]}...")
 
-            combined_context = f"Summary:\n{summary}\n\nFull Document:\n{requirements_text}"
+            # Log every meaningful line from the uploaded document
+            lines = requirements_text.strip().splitlines()
+            for i, line in enumerate(lines):
+                if line.strip():
+                    logging.info(f"[DOC LINE {i+1}] {line.strip()[:100]}")
 
+            # Combine context and answer
+            combined_context = f"Summary:\n{summary}\n\nFull Document:\n{requirements_text}"
             answer = answer_question_from_doc(combined_context, user_prompt)
             logging.info(f"[RESULT] Preview: {answer[:300]}")
             return answer
 
-        # === If user seeks a solution, pull from repository ===
+        # === CASE 2: User needs a solution using repository data (no internet) ===
         elif mode == "solution-needed-from-repo" and not use_internet:
             logging.info("[MODE] Building solution using repo + uploaded requirements (no internet)")
 
             azure_docs = read_files_from_datalake()
-            keywords = re.findall(r"\\w+", summarized_requirements.lower())[:30]
+            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
 
             matches = []
             for doc in azure_docs:
@@ -267,9 +276,11 @@ Respond with only one of the above categories.
             )
             return response.choices[0].message.content.strip()
 
+        # === CASE 3: Use full context – document + repo + internet ===
         else:
             logging.info("[MODE] Full-context mode: using document, repository, and internet.")
 
+            # Step 1: SERP search
             serp_results = serpapi_search(summarized_requirements)
             internet_data = ""
             for result in serp_results:
@@ -279,8 +290,9 @@ Respond with only one of the above categories.
                 summary = summarize_text(f"{title} - {snippet}", 150)
                 internet_data += f"Source: {link}\nTitle: {title}\nSnippet: {snippet}\nSummary: {summary}\n\n"
 
+            # Step 2: Repository matching
             azure_docs = read_files_from_datalake()
-            keywords = re.findall(r"\\w+", summarized_requirements.lower())[:30]
+            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
             matches = []
             for doc in azure_docs:
                 content = doc.get("text", "").lower()
@@ -289,6 +301,7 @@ Respond with only one of the above categories.
                     logging.info(f"[MATCH] {doc.get('filename')} relevant.")
             repo_insights = "\n\n".join(matches)[:8000] if matches else "No repository matches found."
 
+            # Step 3: Final prompt
             final_prompt = f"""
 # Prompt
 {user_prompt.strip()}
@@ -321,8 +334,6 @@ Respond with only one of the above categories.
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
 
-
-# === Question Answering from Document ===
 
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
