@@ -44,7 +44,9 @@ def generate_proposal():
             return jsonify({"error": "No file uploaded"}), 400
 
         filename = uploaded_file.filename.lower()
-        file_bytes = uploaded_file.read()
+        file_bytes = uploaded_file.stream.read()   # <=== FIXED: .stream.read()
+        uploaded_file.stream.seek(0)               # <=== Reset stream pointer
+
         logger.info(f"[FILE] Uploaded: {filename} | Size: {len(file_bytes)} bytes")
 
         if filename.endswith(".pdf"):
@@ -62,7 +64,7 @@ def generate_proposal():
         else:
             logger.info(f"[UPLOAD] Extracted {len(requirements_text)} characters from uploaded document")
 
-        # === Get supporting docs from Azure ===
+        # === Get repository documents ===
         docs_info = read_files_from_datalake()
         logger.info(f"[FILES] Repository documents retrieved: {len(docs_info)}")
 
@@ -74,7 +76,7 @@ def generate_proposal():
             use_internet=use_internet
         )
 
-        # === Create PDF using a Temporary File ===
+        # === Create PDF ===
         pdf = FPDF()
         pdf.add_page()
         pdf.set_auto_page_break(auto=True, margin=15)
@@ -96,7 +98,7 @@ def generate_proposal():
     except Exception as e:
         logger.exception("[ERROR] Failed to generate proposal")
         return jsonify({"error": "Internal server error"}), 500
-
+    
 # === Frontend Route Handling ===
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
