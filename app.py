@@ -6,7 +6,7 @@ import os
 import sys
 import tempfile
 import logging
-
+import io 
 from internet import read_files_from_datalake, generate_comprehensive_proposal, analyze_pdf_with_ai
 
 # === Logging Configuration ===
