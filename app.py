@@ -31,6 +31,7 @@ def generate_proposal():
         # === Retrieve Request Data ===
         user_prompt = request.form.get("prompt")
         use_internet = request.form.get("use_internet") == "true"
+        uploaded_file = request.files.get("file")
 
         logger.info(f"[PROMPT] Received: {user_prompt}")
         logger.info(f"[INTERNET] Enabled: {use_internet}")
@@ -39,18 +40,32 @@ def generate_proposal():
             logger.warning("[WARN] Missing prompt")
             return jsonify({"error": "Missing prompt"}), 400
 
-        # === Read from Azure Data Lake (Always — no conditional check) ===
+        if not uploaded_file:
+            logger.warning("[WARN] No file uploaded")
+            return jsonify({"error": "Missing requirements document"}), 400
+
+        # === Extract Uploaded Requirements File ===
+        temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.filename)
+        uploaded_file.save(temp_path)
+
+        if uploaded_file.filename.lower().endswith(".pdf"):
+            with open(temp_path, "rb") as f:
+                pdf_bytes = f.read()
+            requirements_text = analyze_pdf_with_ai(io.BytesIO(pdf_bytes), uploaded_file.filename)
+        elif uploaded_file.filename.lower().endswith(".docx"):
+            requirements_text = read_docx(temp_path)
+        else:
+            requirements_text = uploaded_file.read().decode("utf-8", errors="ignore")
+
+        logger.info(f"[UPLOAD] Extracted {len(requirements_text)} characters from uploaded document")
+
+        # === Read from Azure Data Lake ===
         docs_info = read_files_from_datalake()
-
         logger.info(f"[FILES] Documents retrieved: {len(docs_info)}")
-
-        # === Extract Document Content (only for logs — not used directly) ===
-        document_text = "\n".join([doc.get("text", "") for doc in docs_info])
-        logger.info(f"[CONTENT] Total length: {len(document_text)} characters")
 
         # === Generate Proposal ===
         result = generate_comprehensive_proposal(
-            requirements_text=document_text,
+            requirements_text=requirements_text,
             docs_info=docs_info,
             user_prompt=user_prompt,
             use_internet=use_internet
