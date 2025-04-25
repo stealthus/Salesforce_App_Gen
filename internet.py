@@ -98,6 +98,8 @@ def serpapi_search(query, max_results=5):
 # === Question Answering ===
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
+    
+    chunks = chunks[:5]
     for i, chunk in enumerate(chunks):
         try:
             logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
@@ -131,7 +133,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         summarized_requirements = summarize_text(requirements_text, 800)
         full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
 
-        # === Infer Intent ===
+        # === Intent Classification ===
         intent_prompt = f"""
 Classify this prompt into one of the following:
 - question-about-uploaded-document
@@ -150,14 +152,14 @@ Prompt:
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Mode selected: {mode}")
 
-        # === Mode: Answer strictly from uploaded document ===
+        # === Mode 1: Q&A from uploaded document ===
         if mode == "question-about-uploaded-document":
             logging.info("[MODE] Answering using uploaded document only.")
             summary = summarize_text(requirements_text, 600)
             combined_context = f"Summary:\n{summary}\n\nFull Document:\n{requirements_text}"
             return answer_question_from_doc(combined_context, user_prompt)
 
-        # === Mode: Generate solution using repository only ===
+        # === Mode 2: Use repository only (no internet) ===
         if mode == "solution-needed-from-repo" and not use_internet:
             logging.info("[MODE] Building solution using repository and uploaded document (no internet).")
             azure_docs = read_files_from_datalake()
@@ -178,6 +180,12 @@ Prompt:
 # Repository Insights
 {repo_insights}
 """
+
+            # === Safe prompt trimming ===
+            if len(final_prompt) > 12000:
+                logging.warning("[TRIM] Final prompt is too long. Trimming to 12,000 characters.")
+                final_prompt = final_prompt[:12000]
+
             response = openai.ChatCompletion.create(
                 model=MODEL,
                 messages=[
@@ -189,7 +197,7 @@ Prompt:
             )
             return response.choices[0].message.content.strip()
 
-        # === Mode: Full Context — Internet + Repository ===
+        # === Mode 3: Full context (Internet + Repo) ===
         logging.info("[MODE] Using document + repository + internet.")
         azure_docs = read_files_from_datalake()
         keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
@@ -222,6 +230,11 @@ Prompt:
 {internet_data}
 """
 
+        # === Safe prompt trimming ===
+        if len(final_prompt) > 12000:
+            logging.warning("[TRIM] Final prompt is too long. Trimming to 12,000 characters.")
+            final_prompt = final_prompt[:12000]
+
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
@@ -236,5 +249,6 @@ Prompt:
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
 
 
