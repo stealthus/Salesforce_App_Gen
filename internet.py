@@ -17,6 +17,31 @@ SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-3.5-turbo"
 print("Reading...")
 # === File Readers ===
+def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
+    try:
+        endpoint = os.getenv("AZURE_FORM_RECOGNIZER_ENDPOINT")
+        key = os.getenv("AZURE_FORM_RECOGNIZER_KEY")
+        client = DocumentAnalysisClient(endpoint, AzureKeyCredential(key))
+
+        poller = client.begin_analyze_document("prebuilt-document", document=pdf_bytes, content_type="application/pdf")
+        result = poller.result()
+
+        extracted_text = []
+        for page in result.pages:
+            for line in page.lines:
+                extracted_text.append(line.content)
+
+        for table in result.tables:
+            extracted_text.append("\n--- Table ---")
+            for cell in table.cells:
+                extracted_text.append(f"Cell[{cell.row_index},{cell.column_index}]: {cell.content}")
+
+        logging.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
+        return "\n".join(extracted_text)
+    except Exception as e:
+        logging.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
+        return ""
+
 def read_docx(file_path):
     try:
         doc = Document(file_path)
@@ -33,30 +58,65 @@ def read_pdf(file_path):
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
 
-# === Azure Setup ===
+# === Smart Data Lake Reader ===
+
 def read_files_from_datalake():
     try:
-        account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
-        account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
-        filesystem = os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
+        ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+        ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+        FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
 
         service_client = DataLakeServiceClient(
-            account_url=f"https://{account_name}.dfs.core.windows.net",
-            credential=account_key
+            account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
+            credential=ACCOUNT_KEY
         )
-        file_system_client = service_client.get_file_system_client(filesystem)
+        file_system_client = service_client.get_file_system_client(FILESYSTEM_NAME)
         paths = file_system_client.get_paths()
 
-        docs = []
+        docs_info = []
+
         for path in paths:
-            if path.is_directory:
-                continue
-            file_client = file_system_client.get_file_client(path.name)
-            content = file_client.download_file().readall().decode("utf-8", errors="ignore")
-            docs.append({"filename": path.name, "text": content})
-        return docs
+            try:
+                if path.is_directory:
+                    continue
+
+                file_path = path.name
+                file_client = file_system_client.get_file_client(file_path)
+                download = file_client.download_file()
+                file_data = download.readall()
+
+                logging.info(f"[DATALAKE FILE] Reading: {file_path}")
+
+                text = ""
+                if file_path.lower().endswith(".pdf"):
+                    text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=file_path)
+
+                elif file_path.lower().endswith(".docx"):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                        tmp.write(file_data)
+                        tmp.flush()
+                        text = read_docx(tmp.name)
+
+                else:
+                    text = file_data.decode("utf-8", errors="ignore")
+
+                if text.strip():
+                    logging.info(f"[DATALAKE DOC READ SUCCESS] {file_path} | {len(text)} characters extracted")
+                    docs_info.append({
+                        "filename": file_path,
+                        "text": text
+                    })
+                else:
+                    logging.warning(f"[DATALAKE DOC EMPTY] {file_path} had no readable content.")
+
+            except Exception as inner_e:
+                logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {inner_e}")
+
+        logging.info(f"[DATALAKE TOTAL FILES READ] {len(docs_info)}")
+        return docs_info
+
     except Exception as e:
-        logging.error(f"[DATALAKE ERROR] {e}")
+        logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
 
 # === Helpers ===
@@ -99,7 +159,7 @@ def serpapi_search(query, max_results=5):
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
     
-    chunks = chunks[:5]
+    chunks = chunks[:8]
     for i, chunk in enumerate(chunks):
         try:
             logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
@@ -130,10 +190,11 @@ If the answer is not found, say: "The answer is not available in the document."
 # === Main Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
+        # === Summarize the uploaded document ===
         summarized_requirements = summarize_text(requirements_text, 800)
-        full_doc = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
+        uploaded_doc_text = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
 
-        # === Intent Classification ===
+        # === Infer Intent based on User Prompt ===
         intent_prompt = f"""
 Classify this prompt into one of the following:
 - question-about-uploaded-document
@@ -152,44 +213,54 @@ Prompt:
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Mode selected: {mode}")
 
-        # === Mode 1: Q&A from uploaded document ===
+        # === Mode 1: QA strictly from uploaded document ===
         if mode == "question-about-uploaded-document":
-            logging.info("[MODE] Answering using uploaded document only.")
+            logging.info("[MODE] Using only the uploaded document for answering.")
             summary = summarize_text(requirements_text, 600)
             combined_context = f"Summary:\n{summary}\n\nFull Document:\n{requirements_text}"
+
             return answer_question_from_doc(combined_context, user_prompt)
 
-        # === Mode 2: Use repository only (no internet) ===
+        # === Read repository documents ===
+        logging.info("[DATALAKE] Fetching documents from Azure Data Lake...")
+        azure_docs = read_files_from_datalake()
+
+        logging.info(f"[DATALAKE] Total repository files fetched: {len(azure_docs)}")
+        for doc in azure_docs:
+            logging.info(f"[FILE] {doc.get('filename', '')} | Characters: {len(doc.get('text', ''))}")
+
+        # === Mode 2: Build Solution from Repo + Uploaded doc ===
         if mode == "solution-needed-from-repo" and not use_internet:
-            logging.info("[MODE] Building solution using repository and uploaded document (no internet).")
-            azure_docs = read_files_from_datalake()
+            logging.info("[MODE] Using repository + uploaded document without internet.")
+
             keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
             matches = [doc["text"] for doc in azure_docs if any(k in doc["text"].lower() for k in keywords)]
-            repo_insights = "\n\n".join(matches[:3]) if matches else "No relevant repository content found."
+
+            repo_insights = "\n\n".join(matches[:3]) if matches else "No strong repository content match found."
 
             final_prompt = f"""
-# Prompt
+# User Prompt
 {user_prompt}
 
 # Requirements Summary
 {summarized_requirements}
 
-# Uploaded Document
-{requirements_text}
+# Uploaded Document Context
+{uploaded_doc_text[:8000]}
 
 # Repository Insights
 {repo_insights}
 """
 
-            # === Safe prompt trimming ===
+            # Trim if very large
             if len(final_prompt) > 12000:
-                logging.warning("[TRIM] Final prompt is too long. Trimming to 12,000 characters.")
+                logging.warning("[TRIM] Reducing prompt size to 12000 characters.")
                 final_prompt = final_prompt[:12000]
 
             response = openai.ChatCompletion.create(
                 model=MODEL,
                 messages=[
-                    {"role": "system", "content": "You are a technical expert integrating Salesforce solutions."},
+                    {"role": "system", "content": "You are an expert Salesforce and enterprise systems integrator."},
                     {"role": "user", "content": final_prompt}
                 ],
                 max_tokens=3500,
@@ -197,12 +268,12 @@ Prompt:
             )
             return response.choices[0].message.content.strip()
 
-        # === Mode 3: Full context (Internet + Repo) ===
-        logging.info("[MODE] Using document + repository + internet.")
-        azure_docs = read_files_from_datalake()
+        # === Mode 3: Full Context (Internet + Repo + Uploaded Doc) ===
+        logging.info("[MODE] Using uploaded document + repository + internet context.")
+
         keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
         matches = [doc["text"] for doc in azure_docs if any(k in doc["text"].lower() for k in keywords)]
-        repo_insights = "\n\n".join(matches[:3]) if matches else "No relevant repository content found."
+        repo_insights = "\n\n".join(matches[:3]) if matches else "No strong repository content match found."
 
         internet_data = ""
         if use_internet:
@@ -214,14 +285,14 @@ Prompt:
                 internet_data += f"Source: {result.get('link')}\nTitle: {result.get('title')}\nSnippet: {result.get('snippet')}\nSummary: {snippet_summary}\n\n"
 
         final_prompt = f"""
-# Prompt
+# User Prompt
 {user_prompt}
 
 # Requirements Summary
 {summarized_requirements}
 
-# Uploaded Document
-{requirements_text}
+# Uploaded Document Context
+{uploaded_doc_text[:8000]}
 
 # Repository Insights
 {repo_insights}
@@ -230,15 +301,15 @@ Prompt:
 {internet_data}
 """
 
-        # === Safe prompt trimming ===
+        # Again trim if very large
         if len(final_prompt) > 12000:
-            logging.warning("[TRIM] Final prompt is too long. Trimming to 12,000 characters.")
+            logging.warning("[TRIM] Reducing final prompt size to 12000 characters.")
             final_prompt = final_prompt[:12000]
 
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a Salesforce and enterprise systems expert."},
+                {"role": "system", "content": "You are an expert Salesforce architect and integration consultant."},
                 {"role": "user", "content": final_prompt}
             ],
             max_tokens=3500,
