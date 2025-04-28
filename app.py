@@ -16,6 +16,7 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
+print("Hello")
 @app.route("/generate", methods=["POST"])
 def generate_proposal():
     try:
