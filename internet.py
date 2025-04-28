@@ -6,7 +6,7 @@ from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 import re
-
+import io
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
 
