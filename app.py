@@ -61,29 +61,13 @@ def generate_proposal():
                 use_internet=use_internet
             )
 
-            # Create PDF
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.set_auto_page_break(auto=True, margin=15)
-            for line in result.split("\n"):
-                try:
-                    encoded = line.encode("latin-1", "ignore").decode("latin-1")
-                    pdf.multi_cell(0, 10, encoded)
-                except Exception as e:
-                    logger.error(f"[PDF ERROR] Could not encode line: {e}")
+            logger.info("[SUCCESS] Generated text ready to send")
 
-            tmp_pdf_path = os.path.join(tmpdir, "Generated_Proposal.pdf")
-            pdf.output(tmp_pdf_path)
-
-            logger.info("[SUCCESS] PDF generated and ready to send")
-
-            return send_file(tmp_pdf_path, download_name="Generated_Proposal.pdf", as_attachment=True)
+            return jsonify({"generated_text": result})
 
     except Exception as e:
         logger.exception("[ERROR] Failed to generate proposal")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-
 # === Frontend Route ===
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
