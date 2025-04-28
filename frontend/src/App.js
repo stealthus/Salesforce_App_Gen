@@ -10,7 +10,7 @@ function App() {
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
-    setGeneratedText(""); // clear previous text output
+    setGeneratedText(""); // Clear previous output when new file selected
   };
 
   const handlePromptChange = (e) => {
@@ -36,14 +36,11 @@ function App() {
 
     setLoading(true);
     try {
-      const response = await axios.post("/generate", formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
+      const response = await axios.post("/generate", formData); 
+      // ✅ No headers manually, no blob
+      // ✅ Backend returns JSON { "generated_text": "..." }
 
-      // Now we expect { generated_text: "..." } from backend
-      setGeneratedText(response.data.generated_text);
+      setGeneratedText(response.data.generated_text); // Save text
     } catch (error) {
       console.error("Error generating proposal:", error);
       alert("Something went wrong. Please try again.");
@@ -65,7 +62,7 @@ function App() {
             onChange={handleFileChange}
             required
           />
-          <small style={{ color: '#555' }}>Accepted formats: .pdf, .docx</small>
+          <small style={{ color: "#555" }}>Accepted formats: .pdf, .docx</small>
         </div>
 
         <div style={{ marginBottom: "20px" }}>
@@ -108,7 +105,7 @@ function App() {
         </button>
       </form>
 
-      {/* Display generated text */}
+      {/* Show generated text */}
       {generatedText && (
         <div style={{ marginTop: "30px" }}>
           <h4>✅ Your Generated Proposal:</h4>
