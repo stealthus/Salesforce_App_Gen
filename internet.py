@@ -188,6 +188,23 @@ If the answer is not found, say: "The answer is not available in the document."
     return "The answer is not available in the document."
 
 # === Main Proposal Generation ===
+def extract_requested_word_count(user_prompt):
+    """
+    Extract the number of words requested by the user from their prompt text.
+    """
+    match = re.search(r"(\d{2,5})\s*words?", user_prompt.lower())
+    if match:
+        return int(match.group(1))
+    return None
+
+def calculate_max_tokens(word_count):
+    """
+    Calculate maximum tokens needed for a given word count.
+    1 word ≈ 0.75 tokens, so tokens ≈ words * 1.33
+    """
+    return int(word_count * 1.33)
+
+# === Your Original Function with Only the Needed Insertions ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
         # === Summarize the uploaded document ===
@@ -257,13 +274,21 @@ Prompt:
                 logging.warning("[TRIM] Reducing prompt size to 12000 characters.")
                 final_prompt = final_prompt[:12000]
 
+            # === New: Set dynamic max_tokens ===
+            requested_words = extract_requested_word_count(user_prompt)
+            if requested_words:
+                dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000)
+                logging.info(f"[WORD COUNT DETECTED] User requested approx {requested_words} words, setting max_tokens={dynamic_max_tokens}")
+            else:
+                dynamic_max_tokens = 3500
+
             response = openai.ChatCompletion.create(
                 model=MODEL,
                 messages=[
                     {"role": "system", "content": "You are an expert Salesforce and enterprise systems integrator."},
                     {"role": "user", "content": final_prompt}
                 ],
-                max_tokens=3500,
+                max_tokens=dynamic_max_tokens,
                 temperature=0.7
             )
             return response.choices[0].message.content.strip()
@@ -306,13 +331,21 @@ Prompt:
             logging.warning("[TRIM] Reducing final prompt size to 12000 characters.")
             final_prompt = final_prompt[:12000]
 
+        # === New: Set dynamic max_tokens ===
+        requested_words = extract_requested_word_count(user_prompt)
+        if requested_words:
+            dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000)
+            logging.info(f"[WORD COUNT DETECTED] User requested approx {requested_words} words, setting max_tokens={dynamic_max_tokens}")
+        else:
+            dynamic_max_tokens = 3500
+
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": "You are an expert Salesforce architect and integration consultant."},
                 {"role": "user", "content": final_prompt}
             ],
-            max_tokens=3500,
+            max_tokens=dynamic_max_tokens,
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
