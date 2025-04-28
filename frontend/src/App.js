@@ -5,12 +5,12 @@ function App() {
   const [file, setFile] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [useInternet, setUseInternet] = useState(false);
-  const [downloadUrl, setDownloadUrl] = useState("");
+  const [generatedText, setGeneratedText] = useState(""); // NEW
   const [loading, setLoading] = useState(false);
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
-    setDownloadUrl("");
+    setGeneratedText(""); // clear previous text output
   };
 
   const handlePromptChange = (e) => {
@@ -32,16 +32,18 @@ function App() {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("prompt", prompt);
-    formData.append("use_internet", useInternet); // pass checkbox value
+    formData.append("use_internet", useInternet);
 
     setLoading(true);
     try {
       const response = await axios.post("/generate", formData, {
-        responseType: "blob",
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
       });
-      const blob = new Blob([response.data], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      setDownloadUrl(url);
+
+      // Now we expect { generated_text: "..." } from backend
+      setGeneratedText(response.data.generated_text);
     } catch (error) {
       console.error("Error generating proposal:", error);
       alert("Something went wrong. Please try again.");
@@ -52,7 +54,7 @@ function App() {
 
   return (
     <div style={{ maxWidth: "700px", margin: "40px auto", fontFamily: "Arial, sans-serif" }}>
-      <h3>📄 AI based Proposal Generator</h3>
+      <h3>📄 AI-based Proposal Generator</h3>
 
       <form onSubmit={handleSubmit}>
         <div style={{ marginBottom: "20px" }}>
@@ -106,16 +108,24 @@ function App() {
         </button>
       </form>
 
-      {downloadUrl && (
+      {/* Display generated text */}
+      {generatedText && (
         <div style={{ marginTop: "30px" }}>
-          <h4>✅ Your proposal is ready:</h4>
-          <a
-            href={downloadUrl}
-            download="Generated_Proposal.pdf"
-            style={{ color: "green", fontWeight: "bold", textDecoration: "underline" }}
+          <h4>✅ Your Generated Proposal:</h4>
+          <div
+            style={{
+              background: "#f9f9f9",
+              padding: "20px",
+              borderRadius: "5px",
+              whiteSpace: "pre-wrap",
+              lineHeight: "1.6",
+              fontSize: "16px",
+              color: "#333",
+              boxShadow: "0 2px 8px rgba(0, 0, 0, 0.1)",
+            }}
           >
-            📥 Download Generated Proposal
-          </a>
+            {generatedText}
+          </div>
         </div>
       )}
     </div>
