@@ -219,6 +219,7 @@ def safe_concatenate_and_trim(docs, word_limit):
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
         # === Step 1: Summarize uploaded document ===
+        logging.info("[STEP 1] Summarizing uploaded document")
         summarized_requirements = summarize_text(requirements_text, 800)
         uploaded_doc_text = safe_concatenate_and_trim(
             [doc.get("text", "") for doc in docs_info if doc.get("text")],
@@ -226,6 +227,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         )
 
         # === Step 2: Classify prompt intent ===
+        logging.info("[STEP 2] Classifying user prompt intent")
         intent_prompt = f"""
 Classify this prompt into one of the following:
 - question-about-uploaded-document
@@ -245,12 +247,15 @@ Prompt:
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
         # === Step 3: Gather repository content ===
+        logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
             azure_docs = read_files_from_datalake()
             logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
 
             keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
+            logging.info(f"[REPO] Keywords extracted: {keywords}")
+
             matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
             logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
 
@@ -261,6 +266,7 @@ Prompt:
                 azure_context = "No strong repository content match found."
 
         # === Step 4: Gather internet data ===
+        logging.info("[STEP 4] Searching internet context (if required)")
         internet_data = ""
         if use_internet and mode == "full-context":
             serp_results = serpapi_search(summarized_requirements)
@@ -274,6 +280,7 @@ Prompt:
                 )
 
         # === Step 5: Calculate max token allowance ===
+        logging.info("[STEP 5] Calculating max token allowance")
         requested_words = extract_requested_word_count(user_prompt)
         dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000) if requested_words else 3500
 
@@ -285,6 +292,7 @@ Prompt:
             )
 
         # === Step 6: Build final prompt ===
+        logging.info("[STEP 6] Constructing final prompt for OpenAI")
         sections = [
             word_instruction,
             f"# User Prompt\n{user_prompt.strip()}",
@@ -300,6 +308,7 @@ Prompt:
         logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
 
         # === Step 7: Call OpenAI ===
+        logging.info("[STEP 7] Calling OpenAI to generate final proposal")
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
