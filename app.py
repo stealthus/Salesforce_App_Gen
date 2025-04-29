@@ -4,7 +4,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 import tempfile
 import logging
-from internet import read_docx, read_pdf, generate_comprehensive_proposal, download_faiss_index_from_datalake, faiss_index, vector_metadata
+from internet import read_docx, read_pdf, generate_comprehensive_proposal
 
 # === App Setup ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
@@ -12,10 +12,6 @@ CORS(app)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
-
-# === Initialize FAISS memory ===
-logger.info("[INIT] Loading FAISS index and metadata from Azure Data Lake")
-faiss_index, vector_metadata = download_faiss_index_from_datalake()
 
 # === Proposal Generation Endpoint ===
 @app.route("/generate", methods=["POST"])
