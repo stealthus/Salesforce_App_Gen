@@ -23,7 +23,7 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 # === Environment Variables ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-3.5-turbo"
+MODEL = "gpt-4-32k"
 
 print("hello")
 
@@ -82,6 +82,8 @@ def read_files_from_datalake():
         ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
         FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
 
+        logging.info(f"[DATALAKE] Connecting to Data Lake: {ACCOUNT_NAME}, filesystem: {FILESYSTEM_NAME}")
+
         service_client = DataLakeServiceClient(
             account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
             credential=ACCOUNT_KEY
@@ -90,35 +92,50 @@ def read_files_from_datalake():
         paths = file_system_client.get_paths()
 
         docs_info = []
+        file_count = 0
+
         for path in paths:
             if path.is_directory:
                 continue
             try:
                 file_path = path.name
+                logging.info(f"[DATALAKE] Reading file: {file_path}")
+
                 file_client = file_system_client.get_file_client(file_path)
                 download = file_client.download_file()
                 file_data = download.readall()
 
                 text = ""
                 if file_path.lower().endswith(".pdf"):
+                    logging.info(f"[DATALAKE] Detected PDF: {file_path}")
                     text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=file_path)
                 elif file_path.lower().endswith(".docx"):
+                    logging.info(f"[DATALAKE] Detected DOCX: {file_path}")
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                         tmp.write(file_data)
                         tmp.flush()
                         text = read_docx(tmp.name)
                 else:
+                    logging.info(f"[DATALAKE] Detected text file: {file_path}")
                     text = file_data.decode("utf-8", errors="ignore")
 
                 if text.strip():
+                    char_count = len(text)
+                    logging.info(f"[DATALAKE] Extracted {char_count} characters from: {file_path}")
                     docs_info.append({"filename": file_path, "text": text})
+                else:
+                    logging.warning(f"[DATALAKE] No content extracted from: {file_path}")
+
             except Exception as e:
                 logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {e}")
 
+        logging.info(f"[DATALAKE] Total files processed: {len(docs_info)}")
         return docs_info
+
     except Exception as e:
         logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
+
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
@@ -189,13 +206,26 @@ If the answer is not found, say: "The answer is not available in the document."
             logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
     return "The answer is not available in the document."
 
+def limit_text_by_words(text, word_limit):
+    words = text.split()
+    return ' '.join(words[:word_limit])
+
+def safe_concatenate_and_trim(docs, word_limit):
+    combined = "\n\n".join(docs)
+    return limit_text_by_words(combined, word_limit)
+
 
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
+        # === Step 1: Summarize uploaded document ===
         summarized_requirements = summarize_text(requirements_text, 800)
-        uploaded_doc_text = "\n".join([doc.get("text", "") for doc in docs_info if doc.get("text")])
+        uploaded_doc_text = safe_concatenate_and_trim(
+            [doc.get("text", "") for doc in docs_info if doc.get("text")],
+            word_limit=3000
+        )
 
+        # === Step 2: Classify prompt intent ===
         intent_prompt = f"""
 Classify this prompt into one of the following:
 - question-about-uploaded-document
@@ -212,21 +242,38 @@ Prompt:
             temperature=0
         )
         mode = intent_response.choices[0].message.content.strip().lower()
+        logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
+        # === Step 3: Gather repository content ===
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
             azure_docs = read_files_from_datalake()
+            logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
+
             keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
             matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
-            azure_context = "\n\n".join(matches[:3]) if matches else "No strong repository content match found."
+            logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
 
+            if matches:
+                azure_context = safe_concatenate_and_trim(matches[:3], word_limit=3000)
+            else:
+                logging.warning("[REPO] No strong keyword matches found in repository.")
+                azure_context = "No strong repository content match found."
+
+        # === Step 4: Gather internet data ===
         internet_data = ""
         if use_internet and mode == "full-context":
             serp_results = serpapi_search(summarized_requirements)
             for result in serp_results:
                 snippet_summary = summarize_text(f"{result.get('title')} - {result.get('snippet')}", 150)
-                internet_data += f"Source: {result.get('link')}\nTitle: {result.get('title')}\nSnippet: {result.get('snippet')}\nSummary: {snippet_summary}\n\n"
+                internet_data += (
+                    f"Source: {result.get('link')}\n"
+                    f"Title: {result.get('title')}\n"
+                    f"Snippet: {result.get('snippet')}\n"
+                    f"Summary: {snippet_summary}\n\n"
+                )
 
+        # === Step 5: Calculate max token allowance ===
         requested_words = extract_requested_word_count(user_prompt)
         dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000) if requested_words else 3500
 
@@ -237,21 +284,22 @@ Prompt:
                 "Do not stop early. Expand fully until reaching the requested word count."
             )
 
+        # === Step 6: Build final prompt ===
         sections = [
             word_instruction,
             f"# User Prompt\n{user_prompt.strip()}",
             f"# Requirements Summary\n{summarized_requirements.strip()}",
             f"# Uploaded Document Context\n{uploaded_doc_text.strip()}"
         ]
-
         if azure_context:
             sections.append(f"# Repository Insights\n{azure_context.strip()}")
-
         if internet_data:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
 
         final_prompt = "\n\n".join(sections)
+        logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
 
+        # === Step 7: Call OpenAI ===
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
@@ -261,8 +309,10 @@ Prompt:
             max_tokens=dynamic_max_tokens,
             temperature=0.6
         )
+
         return response.choices[0].message.content.strip()
 
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
