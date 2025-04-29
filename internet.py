@@ -23,7 +23,7 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 # === Environment Variables ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-4-32k"
+MODEL = "gpt-3.5-turbo"
 
 print("hello")
 
