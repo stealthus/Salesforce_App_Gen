@@ -8,12 +8,9 @@ from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
-from sentence_transformers import SentenceTransformer
 import tempfile
 import io
 import re
-import pickle
-import faiss
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -27,10 +24,6 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-3.5-turbo"
-
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-faiss_index = faiss.IndexFlatL2(384)
-vector_metadata = []
 
 print("hello")
 
@@ -149,21 +142,6 @@ def chunk_text(text, max_words=1200):
     words = text.split()
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
 
-def store_prompt_response(prompt, response):
-    vector = embedding_model.encode([prompt])
-    faiss_index.add(vector)
-    vector_metadata.append({"prompt": prompt, "response": response})
-    upload_faiss_index_to_datalake(faiss_index, vector_metadata)
-    logging.info(f"[MEMORY] Stored vector. Total vectors: {faiss_index.ntotal}")
-
-
-def retrieve_similar_prompts(prompt, top_k=3):
-    if faiss_index.ntotal == 0:
-        return []
-    vector = embedding_model.encode([prompt])
-    D, I = faiss_index.search(vector, top_k)
-    return [(vector_metadata[i]["prompt"], vector_metadata[i]["response"]) for i in I[0] if i < len(vector_metadata)]
-
 def summarize_text(text, max_tokens=800):
     try:
         response = openai.ChatCompletion.create(
@@ -236,77 +214,10 @@ def safe_concatenate_and_trim(docs, word_limit):
     combined = "\n\n".join(docs)
     return limit_text_by_words(combined, word_limit)
 
-def upload_faiss_index_to_datalake(index, metadata, adl_path="faiss/faiss.index", meta_path="faiss/meta.pkl"):
-    try:
-        # Connect
-        account_name = os.environ["AZURE_STORAGE_ACCOUNT_NAME"]
-        account_key = os.environ["AZURE_STORAGE_ACCOUNT_KEY"]
-        filesystem = os.environ["AZURE_DATA_LAKE_FILESYSTEM"]
-        service = DataLakeServiceClient(account_url=f"https://{account_name}.dfs.core.windows.net", credential=account_key)
-        fs_client = service.get_file_system_client(filesystem)
-
-        # Upload FAISS index
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            faiss.write_index(index, tmp.name)
-            tmp.flush()
-            with open(tmp.name, "rb") as f:
-                fc = fs_client.get_file_client(adl_path)
-                fc.create_file()
-                fc.append_data(f.read(), offset=0, length=os.path.getsize(tmp.name))
-                fc.flush_data(len(f.read()))
-
-        # Upload metadata
-        with tempfile.NamedTemporaryFile(delete=False) as meta_tmp:
-            pickle.dump(metadata, meta_tmp)
-            meta_tmp.flush()
-            with open(meta_tmp.name, "rb") as f:
-                fc = fs_client.get_file_client(meta_path)
-                fc.create_file()
-                fc.append_data(f.read(), offset=0, length=os.path.getsize(meta_tmp.name))
-                fc.flush_data(len(f.read()))
-
-        logging.info("[DATALAKE] FAISS index + metadata uploaded.")
-    except Exception as e:
-        logging.error(f"[UPLOAD FAISS ERROR] {e}")
-
-
-def download_faiss_index_from_datalake(adl_path="faiss/faiss.index", meta_path="faiss/meta.pkl"):
-    try:
-        account_name = os.environ["AZURE_STORAGE_ACCOUNT_NAME"]
-        account_key = os.environ["AZURE_STORAGE_ACCOUNT_KEY"]
-        filesystem = os.environ["AZURE_DATA_LAKE_FILESYSTEM"]
-        service = DataLakeServiceClient(account_url=f"https://{account_name}.dfs.core.windows.net", credential=account_key)
-        fs_client = service.get_file_system_client(filesystem)
-
-        # Download FAISS index
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            fc = fs_client.get_file_client(adl_path)
-            stream = fc.download_file()
-            tmp.write(stream.readall())
-            tmp.flush()
-            index = faiss.read_index(tmp.name)
-
-        # Download metadata
-        with tempfile.NamedTemporaryFile(delete=False) as meta_tmp:
-            fc = fs_client.get_file_client(meta_path)
-            stream = fc.download_file()
-            meta_tmp.write(stream.readall())
-            meta_tmp.flush()
-            with open(meta_tmp.name, "rb") as f:
-                metadata = pickle.load(f)
-
-        logging.info("[DATALAKE] FAISS index + metadata loaded from Azure.")
-        return index, metadata
-
-    except Exception as e:
-        logging.error(f"[DOWNLOAD FAISS ERROR] {e}")
-        return faiss.IndexFlatL2(384), []
-
 
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
-        faiss_index, vector_metadata = download_faiss_index_from_datalake()
         # === Step 1: Summarize uploaded document ===
         logging.info("[STEP 1] Summarizing uploaded document")
         summarized_requirements = summarize_text(requirements_text, 800)
@@ -368,13 +279,8 @@ Prompt:
                     f"Summary: {snippet_summary}\n\n"
                 )
 
-        # === Step 5: Retrieve memory context from FAISS ===
-        logging.info("[STEP 5] Retrieving similar past prompts from vector memory")
-        memory_results = retrieve_similar_prompts(user_prompt)
-        memory_context = "\n\n".join([f"Previous Q: {q}\nA: {a}" for q, a in memory_results])
-
-        # === Step 6: Calculate max token allowance ===
-        logging.info("[STEP 6] Calculating max token allowance")
+        # === Step 5: Calculate max token allowance ===
+        logging.info("[STEP 5] Calculating max token allowance")
         requested_words = extract_requested_word_count(user_prompt)
         dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000) if requested_words else 3500
 
@@ -385,11 +291,10 @@ Prompt:
                 "Do not stop early. Expand fully until reaching the requested word count."
             )
 
-        # === Step 7: Build final prompt ===
-        logging.info("[STEP 7] Constructing final prompt for OpenAI")
+        # === Step 6: Build final prompt ===
+        logging.info("[STEP 6] Constructing final prompt for OpenAI")
         sections = [
             word_instruction,
-            f"# Memory Context\n{memory_context}",
             f"# User Prompt\n{user_prompt.strip()}",
             f"# Requirements Summary\n{summarized_requirements.strip()}",
             f"# Uploaded Document Context\n{uploaded_doc_text.strip()}"
@@ -402,8 +307,8 @@ Prompt:
         final_prompt = "\n\n".join(sections)
         logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
 
-        # === Step 8: Call OpenAI ===
-        logging.info("[STEP 8] Calling OpenAI to generate final proposal")
+        # === Step 7: Call OpenAI ===
+        logging.info("[STEP 7] Calling OpenAI to generate final proposal")
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
@@ -414,16 +319,8 @@ Prompt:
             temperature=0.6
         )
 
-        final_output = response.choices[0].message.content.strip()
-
-        # === Step 9: Store prompt-response pair in FAISS memory ===
-        logging.info("[STEP 9] Storing prompt-response pair in memory")
-        store_prompt_response(user_prompt, final_output)
-
-        return final_output
+        return response.choices[0].message.content.strip()
 
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
-
-
