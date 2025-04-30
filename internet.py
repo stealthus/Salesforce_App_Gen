@@ -174,37 +174,67 @@ def extract_requested_word_count(user_prompt):
 def calculate_max_tokens(word_count):
     return int(word_count * 1.5)
 
-# === Question Answering ===
-def answer_question_from_doc(document_text, user_question):
-    chunks = chunk_text(document_text)
-    
-    chunks = chunks[:8]
-    for i, chunk in enumerate(chunks):
-        try:
-            logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
-            prompt = f"""
-You are a helpful assistant. Answer the question strictly using the document content below.
+def answer_question_from_repository(user_question):
+    try:
+        logging.info("[REPO QA] Reading documents from repository for QA")
+        azure_docs = read_files_from_datalake()
+        processed_texts = []
 
-Document:
+        for doc in azure_docs:
+            filename = doc.get("filename", "").lower()
+            if filename.endswith(".pdf"):
+                logging.info(f"[REPO QA] Analyzing PDF with AI: {filename}")
+                file_client = get_datalake_service_client().get_file_system_client(
+                    os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
+                ).get_file_client(filename)
+                download = file_client.download_file()
+                file_data = download.readall()
+                processed_text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=filename)
+                processed_texts.append(processed_text)
+            else:
+                processed_texts.append(doc.get("text", ""))
+
+        all_text = "\n\n".join([t for t in processed_texts if t.strip()])
+        if not all_text:
+            return "No valid repository content available for answering the question."
+
+        logging.info("[REPO QA] Chunking repository content")
+        chunks = chunk_text(all_text)
+        chunks = chunks[:10]  # Limit for efficiency
+
+        for i, chunk in enumerate(chunks):
+            try:
+                logging.info(f"[REPO QA] Searching in chunk {i+1}/{len(chunks)}")
+                prompt = f"""
+You are a technical assistant. Using only the repository document content below, answer the user's question.
+
+Repository Content:
 \"\"\"{chunk}\"\"\"
 
 Question:
 {user_question}
 
-If the answer is not found, say: "The answer is not available in the document."
+If the answer is not found, say: "The answer is not available in the repository documents."
 """
-            response = openai.ChatCompletion.create(
-                model=MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
-                temperature=0.2
-            )
-            answer = response.choices[0].message.content.strip()
-            if "not available" not in answer.lower():
-                return answer
-        except Exception as e:
-            logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
-    return "The answer is not available in the document."
+                response = openai.ChatCompletion.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=400,
+                    temperature=0.2
+                )
+                answer = response.choices[0].message.content.strip()
+                if "not available" not in answer.lower():
+                    return answer
+            except Exception as e:
+                logging.error(f"[OpenAI REPO QA ERROR Chunk {i+1}] {e}")
+
+        return "The answer is not available in the repository documents."
+
+    except Exception as e:
+        logging.error(f"[REPO QA ERROR] {e}")
+        return "Unable to answer the question due to an internal error."
+
+
 
 def limit_text_by_words(text, word_limit):
     words = text.split()
@@ -231,6 +261,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         intent_prompt = f"""
 Classify this prompt into one of the following:
 - question-about-uploaded-document
+- question-about-repository
 - solution-needed-from-repo
 - full-context
 
@@ -246,10 +277,52 @@ Prompt:
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
+        # === Special Mode: Repository-only QA ===
+        if mode == "question-about-repository":
+            logging.info("[SPECIAL MODE] Answering question based only on repository documents")
+            azure_docs = read_files_from_datalake()
+            all_text = "\n\n".join([doc.get("text", "") for doc in azure_docs if doc.get("text")])
+
+            internet_data = ""
+            if use_internet:
+                logging.info("[INTERNET AUGMENTATION] Augmenting repo-based response with internet search")
+                serp_results = serpapi_search(user_prompt)
+                for result in serp_results:
+                    snippet_summary = summarize_text(f"{result.get('title')} - {result.get('snippet')}", 150)
+                    internet_data += (
+                        f"Source: {result.get('link')}\n"
+                        f"Title: {result.get('title')}\n"
+                        f"Snippet: {result.get('snippet')}\n"
+                        f"Summary: {snippet_summary}\n\n"
+                    )
+
+            if internet_data:
+                combined_prompt = f"""
+You are a helpful assistant. Answer the question using the repository content and internet findings below.
+
+# Repository Documents:
+{all_text}
+
+# Internet Findings:
+{internet_data}
+
+Question:
+{user_prompt.strip()}
+"""
+                response = openai.ChatCompletion.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": combined_prompt}],
+                    max_tokens=2000,
+                    temperature=0.5
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                return answer_question_from_doc(all_text, user_prompt)
+
         # === Step 3: Gather repository content ===
         logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
         azure_context = ""
-        if mode in ["repository-needed", "solution-needed", "full-context"]:
+        if mode in ["repository-needed", "solution-needed-from-repo", "full-context"]:
             azure_docs = read_files_from_datalake()
             logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
 
@@ -324,3 +397,5 @@ Prompt:
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
+
