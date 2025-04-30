@@ -10,6 +10,7 @@ from internet import read_docx, read_pdf, generate_comprehensive_proposal
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
 CORS(app)
 
+print("Hello")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
