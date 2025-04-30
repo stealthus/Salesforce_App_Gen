@@ -16,6 +16,3 @@ gunicorn
 azure-ai-formrecognizer
 azure-identity
 azure-storage-file-datalake
-faiss-cpu
-faiss-gpu
-sentence-transformers
