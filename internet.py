@@ -184,55 +184,67 @@ def answer_question_from_repository(user_question):
             filename = doc.get("filename", "").lower()
             if filename.endswith(".pdf"):
                 logging.info(f"[REPO QA] Analyzing PDF with AI: {filename}")
-                file_client = get_datalake_service_client().get_file_system_client(
-                    os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
-                ).get_file_client(filename)
-                download = file_client.download_file()
-                file_data = download.readall()
-                processed_text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=filename)
+                try:
+                    file_client = get_datalake_service_client().get_file_system_client(
+                        os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
+                    ).get_file_client(filename)
+                    download = file_client.download_file()
+                    file_data = download.readall()
+                    processed_text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=filename)
+                except Exception as e:
+                    logging.error(f"[REPO QA] Error reprocessing PDF: {filename} → {e}")
+                    processed_text = doc.get("text", "")
                 processed_texts.append(processed_text)
             else:
                 processed_texts.append(doc.get("text", ""))
 
         all_text = "\n\n".join([t for t in processed_texts if t.strip()])
         if not all_text:
+            logging.warning("[REPO QA] No content extracted from repository.")
             return "No valid repository content available for answering the question."
 
-        logging.info("[REPO QA] Chunking repository content")
+        logging.info(f"[REPO QA] Total repository characters: {len(all_text)}")
         chunks = chunk_text(all_text)
-        chunks = chunks[:10]  # Limit for efficiency
+        logging.info(f"[REPO QA] Total chunks generated: {len(chunks)}")
 
+        # Search through all chunks, not limited
         for i, chunk in enumerate(chunks):
             try:
                 logging.info(f"[REPO QA] Searching in chunk {i+1}/{len(chunks)}")
                 prompt = f"""
-You are a technical assistant. Using only the repository document content below, answer the user's question.
+You are a technical assistant. Use ONLY the repository content below to answer the user's question. Be accurate and concise.
 
 Repository Content:
 \"\"\"{chunk}\"\"\"
 
-Question:
+User Question:
 {user_question}
 
-If the answer is not found, say: "The answer is not available in the repository documents."
+If the answer is not present in the above content, reply strictly with:
+"The answer is not available in the repository documents."
 """
                 response = openai.ChatCompletion.create(
                     model=MODEL,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=400,
+                    max_tokens=500,
                     temperature=0.2
                 )
                 answer = response.choices[0].message.content.strip()
+
+                # Return immediately if it's not the fallback response
                 if "not available" not in answer.lower():
+                    logging.info(f"[REPO QA] Answer found in chunk {i+1}")
                     return answer
+
             except Exception as e:
-                logging.error(f"[OpenAI REPO QA ERROR Chunk {i+1}] {e}")
+                logging.error(f"[OpenAI REPO QA ERROR in chunk {i+1}] {e}")
 
         return "The answer is not available in the repository documents."
 
     except Exception as e:
         logging.error(f"[REPO QA ERROR] {e}")
         return "Unable to answer the question due to an internal error."
+
 
 
 
@@ -259,14 +271,17 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
         # === Step 2: Classify prompt intent ===
         logging.info("[STEP 2] Classifying user prompt intent")
         intent_prompt = f"""
-Classify this prompt into one of the following:
-- question-about-uploaded-document
-- question-about-repository
-- solution-needed-from-repo
-- full-context
+You are a smart assistant classifying user intent. Choose exactly ONE of the following categories:
 
-Prompt:
+1. question-about-uploaded-document → The user is asking only about the uploaded document (e.g., "Summarize", "What does this file say?", "Explain this doc").
+2. question-about-repository → The user is asking about information that likely exists in previously stored reference documents from the repository (e.g., "What does the policy say about X?" or "What standards are defined in the archive?").
+3. solution-needed-from-repo → The user is asking for a solution or system design that requires using repository examples, specifications, or strategies.
+4. full-context → The user is asking for a complete proposal or output requiring uploaded doc + repository + external knowledge (e.g., internet search).
+
+User Prompt:
 {user_prompt.strip()}
+
+Respond with only the exact category name.
 """
         intent_response = openai.ChatCompletion.create(
             model=MODEL,
@@ -320,23 +335,16 @@ Question:
                 return answer_question_from_doc(all_text, user_prompt)
 
         # === Step 3: Gather repository content ===
-        logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
+        logging.info("[STEP 3] Reading all Azure Data Lake documents (no keyword filtering)")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed-from-repo", "full-context"]:
             azure_docs = read_files_from_datalake()
             logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
 
-            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-            logging.info(f"[REPO] Keywords extracted: {keywords}")
+            all_texts = [doc.get("text", "") for doc in azure_docs if doc.get("text", "").strip()]
+            azure_context = "\n\n".join(all_texts)
 
-            matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
-            logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
-
-            if matches:
-                azure_context = safe_concatenate_and_trim(matches[:3], word_limit=3000)
-            else:
-                logging.warning("[REPO] No strong keyword matches found in repository.")
-                azure_context = "No strong repository content match found."
+            logging.info(f"[REPO] Combined repository content word count: {len(azure_context.split())}")
 
         # === Step 4: Gather internet data ===
         logging.info("[STEP 4] Searching internet context (if required)")
@@ -367,11 +375,14 @@ Question:
         # === Step 6: Build final prompt ===
         logging.info("[STEP 6] Constructing final prompt for OpenAI")
         sections = [
-            word_instruction,
-            f"# User Prompt\n{user_prompt.strip()}",
-            f"# Requirements Summary\n{summarized_requirements.strip()}",
-            f"# Uploaded Document Context\n{uploaded_doc_text.strip()}"
-        ]
+                word_instruction,
+                f"# User Prompt\n{user_prompt.strip()}",
+                f"# Requirements Summary\n{summarized_requirements.strip()}",
+                f"# Uploaded Document Context\n{uploaded_doc_text.strip()}",
+                f"# Repository Insights\n{azure_context.strip()}",
+                "IMPORTANT: Pay special attention to small details such as phone numbers, emails, addresses, clause references, and identifiers within the repository documents."
+            ]
+
         if azure_context:
             sections.append(f"# Repository Insights\n{azure_context.strip()}")
         if internet_data:
