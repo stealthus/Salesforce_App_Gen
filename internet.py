@@ -23,7 +23,7 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 # === Environment Variables ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-3.5-turbo"
+MODEL = "gpt-4-turbo"
 
 print("Intenret")
 
@@ -178,68 +178,66 @@ def answer_question_from_repository(user_question):
     try:
         logging.info("[REPO QA] Reading documents from repository for QA")
         azure_docs = read_files_from_datalake()
-        processed_texts = []
+        full_text_sections = []
 
         for doc in azure_docs:
-            filename = doc.get("filename", "").lower()
-            if filename.endswith(".pdf"):
-                logging.info(f"[REPO QA] Analyzing PDF with AI: {filename}")
+            filename = doc.get("filename", "unknown").strip()
+            content = doc.get("text", "").strip()
+
+            # Attempt PDF reprocessing if needed
+            if filename.lower().endswith(".pdf") and not content:
+                logging.info(f"[REPO QA] Reprocessing PDF using Form Recognizer: {filename}")
                 try:
                     file_client = get_datalake_service_client().get_file_system_client(
                         os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
                     ).get_file_client(filename)
                     download = file_client.download_file()
                     file_data = download.readall()
-                    processed_text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=filename)
+                    content = analyze_pdf_with_ai(io.BytesIO(file_data), filename=filename)
                 except Exception as e:
-                    logging.error(f"[REPO QA] Error reprocessing PDF: {filename} → {e}")
-                    processed_text = doc.get("text", "")
-                processed_texts.append(processed_text)
-            else:
-                processed_texts.append(doc.get("text", ""))
+                    logging.error(f"[REPO QA] Failed to reprocess PDF: {filename} → {e}")
 
-        all_text = "\n\n".join([t for t in processed_texts if t.strip()])
-        if not all_text:
-            logging.warning("[REPO QA] No content extracted from repository.")
+            if content:
+                logging.info(f"[REPO QA] Document loaded: {filename} ({len(content)} characters)")
+                full_text_sections.append(f"[FILE: {filename}]\n{content}")
+            else:
+                logging.warning(f"[REPO QA] Skipping empty/unreadable file: {filename}")
+
+        if not full_text_sections:
+            logging.warning("[REPO QA] No valid content extracted from repository.")
             return "No valid repository content available for answering the question."
 
-        logging.info(f"[REPO QA] Total repository characters: {len(all_text)}")
-        chunks = chunk_text(all_text)
-        logging.info(f"[REPO QA] Total chunks generated: {len(chunks)}")
+        full_text = "\n\n".join(full_text_sections)
+        estimated_tokens = int(len(full_text.split()) * 1.5)
+        logging.info(f"[REPO QA] Combined repository word count: {len(full_text.split())}")
+        logging.info(f"[REPO QA] Estimated token usage: {estimated_tokens}")
 
-        # Search through all chunks, not limited
-        for i, chunk in enumerate(chunks):
-            try:
-                logging.info(f"[REPO QA] Searching in chunk {i+1}/{len(chunks)}")
-                prompt = f"""
-You are a technical assistant. Use ONLY the repository content below to answer the user's question. Be accurate and concise.
+        if estimated_tokens > 100000:
+            logging.warning("⚠️ [REPO QA] Repository content approaching or exceeding GPT-4 Turbo's token limit (~128K). Trimming may be needed.")
 
-Repository Content:
-\"\"\"{chunk}\"\"\"
-
-User Question:
-{user_question}
-
-If the answer is not present in the above content, reply strictly with:
+        prompt = f"""
+You are a technical assistant. Use ONLY the repository content below to answer the user's question.
+Be detailed, accurate, and cite the filename if relevant.
+If the answer is not present in the content, respond strictly with:
 "The answer is not available in the repository documents."
+
+# Repository Content:
+\"\"\"{full_text}\"\"\"
+
+# User Question:
+{user_question}
 """
-                response = openai.ChatCompletion.create(
-                    model=MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=500,
-                    temperature=0.2
-                )
-                answer = response.choices[0].message.content.strip()
 
-                # Return immediately if it's not the fallback response
-                if "not available" not in answer.lower():
-                    logging.info(f"[REPO QA] Answer found in chunk {i+1}")
-                    return answer
+        response = openai.ChatCompletion.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=3000,
+            temperature=0.3
+        )
 
-            except Exception as e:
-                logging.error(f"[OpenAI REPO QA ERROR in chunk {i+1}] {e}")
-
-        return "The answer is not available in the repository documents."
+        answer = response.choices[0].message.content.strip()
+        logging.info("[REPO QA] Answer retrieved successfully")
+        return answer
 
     except Exception as e:
         logging.error(f"[REPO QA ERROR] {e}")
@@ -296,7 +294,11 @@ Respond with only the exact category name.
         if mode == "question-about-repository":
             logging.info("[SPECIAL MODE] Answering question based only on repository documents")
             azure_docs = read_files_from_datalake()
-            all_text = "\n\n".join([doc.get("text", "") for doc in azure_docs if doc.get("text")])
+            all_text = "\n\n".join([f"[FILE: {doc['filename']}]\n{doc.get('text', '')}" for doc in azure_docs if doc.get("text")])
+
+            if not all_text.strip():
+                logging.warning("[REPO QA] All repository documents are empty or failed to parse.")
+                return "No valid repository content available for answering the question."
 
             internet_data = ""
             if use_internet:
@@ -334,63 +336,30 @@ Question:
             else:
                 return answer_question_from_doc(all_text, user_prompt)
 
-        
-
-        # === Step 3: Repository Parsing (chunked and fully parsed) ===
-        logging.info("[STEP 3] Reading and chunking all repository documents")
+        # === Step 3: Repository Parsing (no chunking, full context) ===
+        logging.info("[STEP 3] Reading and assembling all repository documents verbatim")
         azure_docs = read_files_from_datalake()
         logging.info(f"[REPO] Total documents read: {len(azure_docs)}")
 
-        all_chunks = []
-        all_content_debug = []
-
+        repo_context_parts = []
         for i, doc in enumerate(azure_docs):
             filename = doc.get("filename", f"doc_{i+1}")
             text = doc.get("text", "").strip()
-            words = text.split()
-            char_count = len(text)
-            word_count = len(words)
-
             if text:
-                logging.info(f"[REPO DOC {i+1}] File: {filename}")
-                logging.info(f"[REPO DOC {i+1}] Character Count: {char_count}, Word Count: {word_count}")
-                for w_idx, word in enumerate(words):
-                    logging.debug(f"[WORD {w_idx+1}] {word}")
-                chunks = chunk_text(text, max_words=800)
-                for j, chunk in enumerate(chunks):
-                    all_chunks.append((filename, j + 1, chunk))
-                    all_content_debug.append(f"[Document: {filename} | Chunk {j+1}]\n{chunk}")
+                logging.info(f"[REPO DOC {i+1}] File: {filename} — {len(text)} characters")
+                repo_context_parts.append(f"[FILE: {filename}]\n{text}")
             else:
                 logging.warning(f"[REPO DOC {i+1}] {filename} — EMPTY or unreadable")
 
-        if not all_chunks:
-            logging.warning("[REPO] All repository documents are empty or failed to parse.")
+        azure_context = "\n\n".join(repo_context_parts).strip()
+        token_estimate = int(len(azure_context.split()) * 1.5)
+        logging.info(f"[REPO] Combined repository word count: {len(azure_context.split())}")
+        logging.info(f"[REPO] Estimated token usage: {token_estimate}")
+
+        if not azure_context:
             azure_context = "[REPO EMPTY] No repository content could be parsed. Cannot generate context-aware response."
-        else:
-            logging.info(f"[REPO] Total chunks across all documents: {len(all_chunks)}")
-            logging.info("[REPO] All chunks have been logged and parsed. Proceeding with final model call.")
-
-            # One final query combining all chunks
-            full_repo_context = "\n\n".join(all_content_debug)
-            final_repo_prompt = f"""
-You are a technical assistant. Use ONLY the following repository content to answer the user's question. Pay attention to details like numbers, names, addresses, and clause references.
-
-{full_repo_context}
-
-User Question:
-{user_prompt}
-"""
-            try:
-                response = openai.ChatCompletion.create(
-                    model=MODEL,
-                    messages=[{"role": "user", "content": final_repo_prompt}],
-                    max_tokens=1500,
-                    temperature=0.3
-                )
-                azure_context = response.choices[0].message.content.strip()
-            except Exception as e:
-                logging.error(f"[REPO FINAL QUERY ERROR] {e}")
-                azure_context = "[REPO] Unable to retrieve response from OpenAI."
+        elif token_estimate > 100000:
+            logging.warning("⚠️ [REPO] Repository content approaching GPT-4 Turbo's 128K token limit. Consider trimming.")
 
         # === Enforce repository-only answers when internet is off and question is not about uploaded document ===
         if not use_internet and mode != "question-about-uploaded-document":
@@ -411,8 +380,6 @@ User Question:
                     f"Summary: {snippet_summary}\n\n"
                 )
 
-
-
         # === Step 5: Calculate max token allowance ===
         logging.info("[STEP 5] Calculating max token allowance")
         requested_words = extract_requested_word_count(user_prompt)
@@ -428,20 +395,17 @@ User Question:
         # === Step 6: Build final prompt ===
         logging.info("[STEP 6] Constructing final prompt for OpenAI")
         sections = [
-                word_instruction,
-                f"# User Prompt\n{user_prompt.strip()}",
-                f"# Requirements Summary\n{summarized_requirements.strip()}",
-                f"# Uploaded Document Context\n{uploaded_doc_text.strip()}",
-                f"# Repository Insights\n{azure_context.strip()}",
-                "IMPORTANT: Pay special attention to small details such as phone numbers, emails, addresses, clause references, and identifiers within the repository documents."
-            ]
-
-        if azure_context:
-            sections.append(f"# Repository Insights\n{azure_context.strip()}")
+            word_instruction,
+            f"# User Prompt\n{user_prompt.strip()}",
+            f"# Requirements Summary\n{summarized_requirements.strip()}",
+            f"# Uploaded Document Context\n{uploaded_doc_text.strip()}",
+            f"# Repository Insights\n{azure_context.strip()}",
+            "IMPORTANT: Pay special attention to small details such as phone numbers, emails, addresses, clause references, and identifiers within the repository documents."
+        ]
         if internet_data:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
 
-        final_prompt = "\n\n".join(sections)
+        final_prompt = "\n\n".join([s for s in sections if s.strip()])
         logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
 
         # === Step 7: Call OpenAI ===
@@ -461,5 +425,7 @@ User Question:
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
+
 
 
