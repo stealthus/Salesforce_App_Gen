@@ -334,19 +334,41 @@ Question:
             else:
                 return answer_question_from_doc(all_text, user_prompt)
 
-        # === Step 3: Gather repository content ===
-        logging.info("[STEP 3] Reading all Azure Data Lake documents (no keyword filtering)")
-        azure_context = ""
-        if mode in ["repository-needed", "solution-needed-from-repo", "full-context"]:
-            azure_docs = read_files_from_datalake()
-            logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
+        # === Step 3: Repository Parsing (always when needed) ===
+        logging.info("[STEP 3] Reading ALL repository documents")
+        azure_docs = read_files_from_datalake()
+        logging.info(f"[REPO] Total documents read: {len(azure_docs)}")
 
-            all_texts = [doc.get("text", "") for doc in azure_docs if doc.get("text", "").strip()]
-            azure_context = "\n\n".join(all_texts)
+        all_repo_text = ""
+        for i, doc in enumerate(azure_docs):
+            filename = doc.get("filename", f"doc_{i+1}")
+            text = doc.get("text", "").strip()
+            char_count = len(text)
+            word_count = len(text.split())
 
-            logging.info(f"[REPO] Combined repository content word count: {len(azure_context.split())}")
+            if text:
+                logging.info(f"[REPO DOC {i+1}] File: {filename}")
+                logging.info(f"[REPO DOC {i+1}] Character Count: {char_count}, Word Count: {word_count}")
+                logging.info(f"[REPO DOC {i+1}] Full Content:\n{text}")
 
-        # === Step 4: Gather internet data ===
+                all_repo_text += f"\n\n[DOCUMENT: {filename}]\n{text}"
+            else:
+                logging.warning(f"[REPO DOC {i+1}] {filename} — EMPTY or unreadable")
+
+        azure_context = all_repo_text.strip()
+        logging.info(f"[REPO] Final combined repository context character count: {len(azure_context)}")
+        logging.debug(f"[REPO] Final Combined Content Sent to OpenAI:\n{azure_context}")
+
+        if not azure_context:
+            logging.warning("[REPO] All repository documents are empty or failed to parse.")
+            azure_context = "[REPO EMPTY] No repository content could be parsed. Cannot generate context-aware response."
+
+        # === Enforce repository-only answers when internet is off and question is not about uploaded document ===
+        if not use_internet and mode != "question-about-uploaded-document":
+            logging.info("[ENFORCEMENT] Internet is OFF and intent is repository-related. Forcing model to strictly use repository content.")
+            internet_data = ""
+
+        # === Step 4: Gather internet data if allowed and needed ===
         logging.info("[STEP 4] Searching internet context (if required)")
         internet_data = ""
         if use_internet and mode == "full-context":
