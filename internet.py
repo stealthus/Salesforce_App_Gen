@@ -243,7 +243,37 @@ If the answer is not present in the content, respond strictly with:
         logging.error(f"[REPO QA ERROR] {e}")
         return "Unable to answer the question due to an internal error."
 
+# === Question Answering ===
+def answer_question_from_doc(document_text, user_question):
+    chunks = chunk_text(document_text)
+    
+    chunks = chunks[:8]
+    for i, chunk in enumerate(chunks):
+        try:
+            logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
+            prompt = f"""
+You are a helpful assistant. Answer the question strictly using the document content below.
 
+Document:
+\"\"\"{chunk}\"\"\"
+
+Question:
+{user_question}
+
+If the answer is not found, say: "The answer is not available in the document."
+"""
+            response = openai.ChatCompletion.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=400,
+                temperature=0.2
+            )
+            answer = response.choices[0].message.content.strip()
+            if "not available" not in answer.lower():
+                return answer
+        except Exception as e:
+            logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
+    return "The answer is not available in the document."
 
 
 def limit_text_by_words(text, word_limit):
