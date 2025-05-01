@@ -334,34 +334,63 @@ Question:
             else:
                 return answer_question_from_doc(all_text, user_prompt)
 
-        # === Step 3: Repository Parsing (always when needed) ===
-        logging.info("[STEP 3] Reading ALL repository documents")
+        
+
+        # === Step 3: Repository Parsing (chunked and fully parsed) ===
+        logging.info("[STEP 3] Reading and chunking all repository documents")
         azure_docs = read_files_from_datalake()
         logging.info(f"[REPO] Total documents read: {len(azure_docs)}")
 
-        all_repo_text = ""
+        all_chunks = []
+        all_content_debug = []
+
         for i, doc in enumerate(azure_docs):
             filename = doc.get("filename", f"doc_{i+1}")
             text = doc.get("text", "").strip()
+            words = text.split()
             char_count = len(text)
-            word_count = len(text.split())
+            word_count = len(words)
 
             if text:
                 logging.info(f"[REPO DOC {i+1}] File: {filename}")
                 logging.info(f"[REPO DOC {i+1}] Character Count: {char_count}, Word Count: {word_count}")
-                logging.info(f"[REPO DOC {i+1}] Full Content:\n{text}")
-
-                all_repo_text += f"\n\n[DOCUMENT: {filename}]\n{text}"
+                for w_idx, word in enumerate(words):
+                    logging.debug(f"[WORD {w_idx+1}] {word}")
+                chunks = chunk_text(text, max_words=800)
+                for j, chunk in enumerate(chunks):
+                    all_chunks.append((filename, j + 1, chunk))
+                    all_content_debug.append(f"[Document: {filename} | Chunk {j+1}]\n{chunk}")
             else:
                 logging.warning(f"[REPO DOC {i+1}] {filename} — EMPTY or unreadable")
 
-        azure_context = all_repo_text.strip()
-        logging.info(f"[REPO] Final combined repository context character count: {len(azure_context)}")
-        logging.debug(f"[REPO] Final Combined Content Sent to OpenAI:\n{azure_context}")
-
-        if not azure_context:
+        if not all_chunks:
             logging.warning("[REPO] All repository documents are empty or failed to parse.")
             azure_context = "[REPO EMPTY] No repository content could be parsed. Cannot generate context-aware response."
+        else:
+            logging.info(f"[REPO] Total chunks across all documents: {len(all_chunks)}")
+            logging.info("[REPO] All chunks have been logged and parsed. Proceeding with final model call.")
+
+            # One final query combining all chunks
+            full_repo_context = "\n\n".join(all_content_debug)
+            final_repo_prompt = f"""
+You are a technical assistant. Use ONLY the following repository content to answer the user's question. Pay attention to details like numbers, names, addresses, and clause references.
+
+{full_repo_context}
+
+User Question:
+{user_prompt}
+"""
+            try:
+                response = openai.ChatCompletion.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": final_repo_prompt}],
+                    max_tokens=1500,
+                    temperature=0.3
+                )
+                azure_context = response.choices[0].message.content.strip()
+            except Exception as e:
+                logging.error(f"[REPO FINAL QUERY ERROR] {e}")
+                azure_context = "[REPO] Unable to retrieve response from OpenAI."
 
         # === Enforce repository-only answers when internet is off and question is not about uploaded document ===
         if not use_internet and mode != "question-about-uploaded-document":
@@ -381,6 +410,8 @@ Question:
                     f"Snippet: {result.get('snippet')}\n"
                     f"Summary: {snippet_summary}\n\n"
                 )
+
+
 
         # === Step 5: Calculate max token allowance ===
         logging.info("[STEP 5] Calculating max token allowance")
