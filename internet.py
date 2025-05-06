@@ -11,6 +11,7 @@ from azure.core.credentials import AzureKeyCredential
 import tempfile
 import io
 import re
+from pinecone import Pinecone, ServerlessSpec
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -24,6 +25,59 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-4-turbo"
+
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+if os.getenv("PINECONE_INDEX_NAME") not in pc.list_indexes().names():
+    pc.create_index(
+        name=os.getenv("PINECONE_INDEX_NAME"),
+        dimension=1536,
+        metric="cosine",
+        spec=ServerlessSpec(
+            cloud="aws",
+            region=os.getenv("PINECONE_ENV") + "-aws"
+        )
+    )
+pinecone_index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
+
+def index_documents_to_pinecone(docs_info):
+    for doc in docs_info:
+        filename = doc.get("filename")
+        text = doc.get("text", "").strip()
+        if not text:
+            continue
+
+        chunks = chunk_text(text, max_words=300)
+        for i, chunk in enumerate(chunks):
+            try:
+                embedding = openai.Embedding.create(
+                    input=chunk,
+                    model="text-embedding-ada-002"
+                )['data'][0]['embedding']
+
+                vector_id = f"{filename}__chunk_{i}"
+                pinecone_index.upsert([(vector_id, embedding, {"filename": filename, "text": chunk})])
+                logging.info(f"[PINECONE] Indexed: {vector_id}")
+
+            except Exception as e:
+                logging.error(f"[PINECONE EMBEDDING ERROR] {filename} chunk {i} → {e}")
+
+def search_pinecone_by_threshold(query, threshold=0.85):
+    try:
+        embedding = openai.Embedding.create(
+            input=query,
+            model="text-embedding-ada-002"
+        )['data'][0]['embedding']
+
+        results = pinecone_index.query(vector=embedding, top_k=100, include_metadata=True)
+        filtered = [
+            match['metadata']['text']
+            for match in results['matches']
+            if match['score'] >= threshold
+        ]
+        return filtered or ["No relevant content found in repository."]
+    except Exception as e:
+        logging.error(f"[PINECONE SEARCH ERROR] {e}")
+        return ["Pinecone search failed."]
 
 print("Interet")
 
@@ -288,7 +342,6 @@ def safe_concatenate_and_trim(docs, word_limit):
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
-        # === Step 1: Summarize uploaded document ===
         logging.info("[STEP 1] Summarizing uploaded document")
         summarized_requirements = summarize_text(requirements_text, 800)
         uploaded_doc_text = safe_concatenate_and_trim(
@@ -296,15 +349,14 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
             word_limit=3000
         )
 
-        # === Step 2: Classify prompt intent ===
         logging.info("[STEP 2] Classifying user prompt intent")
         intent_prompt = f"""
 You are a smart assistant classifying user intent. Choose exactly ONE of the following categories:
 
-1. question-about-uploaded-document → The user is asking only about the uploaded document (e.g., "Summarize", "What does this file say?", "Explain this doc").
-2. question-about-repository → The user is asking about information that likely exists in previously stored reference documents from the repository (e.g., "What does the policy say about X?" or "What standards are defined in the archive?").
-3. solution-needed-from-repo → The user is asking for a solution or system design that requires using repository examples, specifications, or strategies.
-4. full-context → The user is asking for a complete proposal or output requiring uploaded doc + repository + external knowledge (e.g., internet search).
+1. question-about-uploaded-document → The user is asking only about the uploaded document.
+2. question-about-repository → The user is asking about stored reference documents.
+3. solution-needed-from-repo → The user needs a solution using stored repository examples.
+4. full-context → The user needs a proposal requiring document + repo + internet.
 
 User Prompt:
 {user_prompt.strip()}
@@ -320,20 +372,28 @@ Respond with only the exact category name.
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
-        # === Special Mode: Repository-only QA ===
-        if mode == "question-about-repository":
-            logging.info("[SPECIAL MODE] Answering question based only on repository documents")
-            azure_docs = read_files_from_datalake()
-            all_text = "\n\n".join([f"[FILE: {doc['filename']}]\n{doc.get('text', '')}" for doc in azure_docs if doc.get("text")])
+        # === Step 3: Use Pinecone to retrieve relevant repo context ===
+        logging.info("[STEP 3] Querying Pinecone for semantically similar context")
+        pinecone_context = search_pinecone_by_threshold(user_prompt, threshold=0.85)
+        azure_context = "\n\n".join(pinecone_context).strip()
 
-            if not all_text.strip():
-                logging.warning("[REPO QA] All repository documents are empty or failed to parse.")
-                return "No valid repository content available for answering the question."
+        token_estimate = int(len(azure_context.split()) * 1.5)
+        logging.info(f"[REPO] Pinecone word count: {len(azure_context.split())}")
+        logging.info(f"[REPO] Token estimate: {token_estimate}")
 
+        if not azure_context:
+            azure_context = "[REPO EMPTY] No relevant content retrieved from Pinecone."
+        elif token_estimate > 100000:
+            logging.warning("⚠️ Pinecone content approaching GPT-4 token limit")
+
+        if not use_internet and mode != "question-about-uploaded-document":
+            logging.info("[ENFORCEMENT] Internet OFF. Using only Pinecone context.")
             internet_data = ""
-            if use_internet:
-                logging.info("[INTERNET AUGMENTATION] Augmenting repo-based response with internet search")
-                serp_results = serpapi_search(user_prompt)
+        else:
+            logging.info("[STEP 4] Searching internet context if required")
+            internet_data = ""
+            if use_internet and mode == "full-context":
+                serp_results = serpapi_search(summarized_requirements)
                 for result in serp_results:
                     snippet_summary = summarize_text(f"{result.get('title')} - {result.get('snippet')}", 150)
                     internet_data += (
@@ -343,86 +403,12 @@ Respond with only the exact category name.
                         f"Summary: {snippet_summary}\n\n"
                     )
 
-            if internet_data:
-                combined_prompt = f"""
-You are a helpful assistant. Answer the question using the repository content and internet findings below.
-
-# Repository Documents:
-{all_text}
-
-# Internet Findings:
-{internet_data}
-
-Question:
-{user_prompt.strip()}
-"""
-                response = openai.ChatCompletion.create(
-                    model=MODEL,
-                    messages=[{"role": "user", "content": combined_prompt}],
-                    max_tokens=2000,
-                    temperature=0.5
-                )
-                return response.choices[0].message.content.strip()
-            else:
-                return answer_question_from_doc(all_text, user_prompt)
-
-        # === Step 3: Repository Parsing (no chunking, full context) ===
-        logging.info("[STEP 3] Reading and assembling all repository documents verbatim")
-        azure_docs = read_files_from_datalake()
-        logging.info(f"[REPO] Total documents read: {len(azure_docs)}")
-
-        repo_context_parts = []
-        for i, doc in enumerate(azure_docs):
-            filename = doc.get("filename", f"doc_{i+1}")
-            text = doc.get("text", "").strip()
-            if text:
-                logging.info(f"[REPO DOC {i+1}] File: {filename} — {len(text)} characters")
-                repo_context_parts.append(f"[FILE: {filename}]\n{text}")
-            else:
-                logging.warning(f"[REPO DOC {i+1}] {filename} — EMPTY or unreadable")
-
-        azure_context = "\n\n".join(repo_context_parts).strip()
-        token_estimate = int(len(azure_context.split()) * 1.5)
-        logging.info(f"[REPO] Combined repository word count: {len(azure_context.split())}")
-        logging.info(f"[REPO] Estimated token usage: {token_estimate}")
-
-        if not azure_context:
-            azure_context = "[REPO EMPTY] No repository content could be parsed. Cannot generate context-aware response."
-        elif token_estimate > 100000:
-            logging.warning("⚠️ [REPO] Repository content approaching GPT-4 Turbo's 128K token limit. Consider trimming.")
-
-        # === Enforce repository-only answers when internet is off and question is not about uploaded document ===
-        if not use_internet and mode != "question-about-uploaded-document":
-            logging.info("[ENFORCEMENT] Internet is OFF and intent is repository-related. Forcing model to strictly use repository content.")
-            internet_data = ""
-
-        # === Step 4: Gather internet data if allowed and needed ===
-        logging.info("[STEP 4] Searching internet context (if required)")
-        internet_data = ""
-        if use_internet and mode == "full-context":
-            serp_results = serpapi_search(summarized_requirements)
-            for result in serp_results:
-                snippet_summary = summarize_text(f"{result.get('title')} - {result.get('snippet')}", 150)
-                internet_data += (
-                    f"Source: {result.get('link')}\n"
-                    f"Title: {result.get('title')}\n"
-                    f"Snippet: {result.get('snippet')}\n"
-                    f"Summary: {snippet_summary}\n\n"
-                )
-
-        # === Step 5: Calculate max token allowance ===
         logging.info("[STEP 5] Calculating max token allowance")
         requested_words = extract_requested_word_count(user_prompt)
         dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000) if requested_words else 3500
 
-        word_instruction = ""
-        if requested_words:
-            word_instruction = (
-                f"IMPORTANT: Your response must be at least {requested_words} words. "
-                "Do not stop early. Expand fully until reaching the requested word count."
-            )
+        word_instruction = f"IMPORTANT: Your response must be at least {requested_words} words." if requested_words else ""
 
-        # === Step 6: Build final prompt ===
         logging.info("[STEP 6] Constructing final prompt for OpenAI")
         sections = [
             word_instruction,
@@ -430,7 +416,7 @@ Question:
             f"# Requirements Summary\n{summarized_requirements.strip()}",
             f"# Uploaded Document Context\n{uploaded_doc_text.strip()}",
             f"# Repository Insights\n{azure_context.strip()}",
-            "IMPORTANT: Pay special attention to small details such as phone numbers, emails, addresses, clause references, and identifiers within the repository documents."
+            "IMPORTANT: Pay attention to small details like emails, addresses, clause refs."
         ]
         if internet_data:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
@@ -438,12 +424,11 @@ Question:
         final_prompt = "\n\n".join([s for s in sections if s.strip()])
         logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
 
-        # === Step 7: Call OpenAI ===
         logging.info("[STEP 7] Calling OpenAI to generate final proposal")
         response = openai.ChatCompletion.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical expert and must strictly follow the user's instructions, especially regarding word count."},
+                {"role": "system", "content": "You are a technical expert. Follow word count instructions."},
                 {"role": "user", "content": final_prompt}
             ],
             max_tokens=dynamic_max_tokens,

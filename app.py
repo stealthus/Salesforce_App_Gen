@@ -4,7 +4,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 import tempfile
 import logging
-from internet import read_docx, read_pdf, generate_comprehensive_proposal
+from internet import read_docx, read_pdf, generate_comprehensive_proposal, index_documents_to_pinecone
+
 
 # === App Setup ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
@@ -41,6 +42,7 @@ def generate_proposal():
                 return jsonify({"error": "Empty document"}), 400
 
             docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
+            index_documents_to_pinecone(docs_info)
 
             result = generate_comprehensive_proposal(
                 requirements_text=document_text,
