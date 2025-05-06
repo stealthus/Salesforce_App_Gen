@@ -11,7 +11,6 @@ from azure.core.credentials import AzureKeyCredential
 import tempfile
 import io
 import re
-from pinecone import Pinecone, ServerlessSpec
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -26,13 +25,7 @@ openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-4-turbo"
 
-pinecone.init(
-    api_key=os.getenv("PINECONE_API_KEY"),
-    environment=os.getenv("PINECONE_ENV")
-)
-pinecone_index = pinecone.Index(os.getenv("PINECONE_INDEX_NAME"))
-
-print("Internet")
+print("Interet")
 
 # === File Readers ===
 def read_docx(file_path):
@@ -143,45 +136,6 @@ def read_files_from_datalake():
         logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
 
-def index_documents_to_pinecone(docs_info):
-    for doc in docs_info:
-        filename = doc.get("filename")
-        text = doc.get("text", "").strip()
-        if not text:
-            continue
-
-        chunks = chunk_text(text, max_words=300)
-        for i, chunk in enumerate(chunks):
-            try:
-                embedding = openai.Embedding.create(
-                    input=chunk,
-                    model="text-embedding-ada-002"
-                )['data'][0]['embedding']
-
-                vector_id = f"{filename}__chunk_{i}"
-                pinecone_index.upsert([(vector_id, embedding, {"filename": filename, "text": chunk})])
-                logging.info(f"[PINECONE] Indexed: {vector_id}")
-
-            except Exception as e:
-                logging.error(f"[PINECONE EMBEDDING ERROR] {filename} chunk {i} → {e}")
-
-def search_pinecone_by_threshold(query, threshold=0.85):
-    try:
-        embedding = openai.Embedding.create(
-            input=query,
-            model="text-embedding-ada-002"
-        )['data'][0]['embedding']
-
-        results = pinecone_index.query(vector=embedding, top_k=100, include_metadata=True)
-        filtered = [
-            match['metadata']['text']
-            for match in results['matches']
-            if match['score'] >= threshold
-        ]
-        return filtered or ["No relevant content found in repository."]
-    except Exception as e:
-        logging.error(f"[PINECONE SEARCH ERROR] {e}")
-        return ["Pinecone search failed."]
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
@@ -443,31 +397,7 @@ Question:
             internet_data = ""
 
         # === Step 4: Gather internet data if allowed and needed ===
-        logging.info("[STEP 4] Searching internet and Pinecone vector context (if required)")
-
-        pinecone_snippets = []
-        if mode in ("full-context", "solution-needed-from-repo", "question-about-repository"):
-            try:
-                logging.info("[PINECONE] Searching for relevant vector results")
-                pinecone_snippets = search_pinecone_by_threshold(user_prompt)
-                logging.info(f"[PINECONE] Retrieved {len(pinecone_snippets)} relevant chunks")
-            except Exception as e:
-                logging.error(f"[PINECONE ERROR] Could not fetch vector results → {e}")
-
-            # === Optional: Re-index if Pinecone returns nothing or failure ===
-            if not pinecone_snippets or "Pinecone search failed." in pinecone_snippets[0] or (
-                len(pinecone_snippets) == 1 and "No relevant content" in pinecone_snippets[0]
-            ):
-                logging.warning("[PINECONE] No valid vector matches, attempting re-indexing")
-                fresh_docs = read_files_from_datalake()
-                index_documents_to_pinecone(fresh_docs)
-                # Try searching again after indexing
-                try:
-                    pinecone_snippets = search_pinecone_by_threshold(user_prompt)
-                    logging.info(f"[PINECONE] Retrieved {len(pinecone_snippets)} chunks after re-indexing")
-                except Exception as e:
-                    logging.error(f"[PINECONE RETRY FAILED] → {e}")
-
+        logging.info("[STEP 4] Searching internet context (if required)")
         internet_data = ""
         if use_internet and mode == "full-context":
             serp_results = serpapi_search(summarized_requirements)
@@ -502,11 +432,6 @@ Question:
             f"# Repository Insights\n{azure_context.strip()}",
             "IMPORTANT: Pay special attention to small details such as phone numbers, emails, addresses, clause references, and identifiers within the repository documents."
         ]
-        
-        if pinecone_snippets:
-            pinecone_context = "\n\n".join(pinecone_snippets)
-            sections.append(f"# Pinecone Vector Matches\n{pinecone_context.strip()}")
-    
         if internet_data:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
 

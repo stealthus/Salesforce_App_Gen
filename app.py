@@ -10,6 +10,7 @@ from internet import read_docx, read_pdf, generate_comprehensive_proposal
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
 CORS(app)
 
+print("Flask app")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
@@ -49,7 +50,10 @@ def generate_proposal():
             )
 
             logger.info("[RESPONSE] Sending generated text to frontend.")
-            return jsonify({"generated_text": result})
+
+            response = jsonify({"generated_text": result})
+            response.headers["Content-Type"] = "application/json"
+            return response
 
     except Exception as e:
         logger.exception("[ERROR] Internal server error")
