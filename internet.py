@@ -16,86 +16,78 @@ from pinecone import Pinecone, ServerlessSpec
 # === Logging Setup ===
 logging.basicConfig(
     level=logging.INFO,
-    stream=sys.stdout,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+logger = logging.getLogger()
 
 # === Environment Variables ===
-openai.api_key = os.environ.get("OPENAI_API_KEY")
-SERP_API_KEY = os.environ.get("SERP_API_KEY")
+openai.api_key = os.getenv("OPENAI_API_KEY")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 MODEL = "gpt-4-turbo"
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-
-# === Read index name and region from environment variables ===
 index_name = os.getenv("PINECONE_INDEX_NAME")
-region = os.getenv("PINECONE_ENV")  # e.g., "us-east1"
+region = os.getenv("PINECONE_ENV")
 
-# === Create index if it doesn't exist ===
 if index_name not in pc.list_indexes().names():
-    logging.info(f"[PINECONE] Creating index '{index_name}' in region '{region}'...")
+    logger.info(f"[PINECONE] Creating index '{index_name}' in region '{region}'...")
     pc.create_index(
         name=index_name,
-        dimension=1536,
+        dimension=3072,
         metric="cosine",
-        spec=ServerlessSpec(
-            cloud="aws",
-            region=region
-        )
+        spec=ServerlessSpec(cloud="aws", region=region)
     )
-else:
-    logging.info(f"[PINECONE] Index '{index_name}' already exists.")
 
-# === Connect to the index ===
 pinecone_index = pc.Index(index_name)
 
-def index_documents_to_pinecone(docs_info):
-    indexed_files = []  # Keep track of indexed filenames and chunk counts
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
+def get_embedding(chunk):
+    return openai.Embedding.create(
+        input=chunk,
+        model="text-embedding-3-large"
+    )["data"][0]["embedding"]
 
+def chunk_text(text, max_words=1200):
+    words = text.split()
+    chunks = [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+    logger.info(f"[CHUNKING] Generated {len(chunks)} chunks.")
+    return chunks
+
+def index_documents_to_pinecone(docs_info):
+    indexed_files = []
     for doc in docs_info:
         filename = doc.get("filename")
         text = doc.get("text", "").strip()
         if not text:
-            logging.warning(f"[INDEXING SKIPPED] Empty content in file: {filename}")
+            logger.warning(f"[INDEXING SKIPPED] Empty content: {filename}")
             continue
 
         chunks = chunk_text(text, max_words=300)
-        logging.info(f"[CHUNKING] File '{filename}' split into {len(chunks)} chunks.")
+        logger.info(f"[CHUNKING] File '{filename}' split into {len(chunks)} chunks.")
 
         for i, chunk in enumerate(chunks):
             try:
-                embedding = openai.Embedding.create(
-                    input=chunk,
-                    model="text-embedding-ada-002"
-                )['data'][0]['embedding']
-
+                embedding = get_embedding(chunk)
                 vector_id = f"{filename}__chunk_{i}"
-                pinecone_index.upsert([
-                    (vector_id, embedding, {"filename": filename, "text": chunk})
-                ])
-                logging.info(f"[PINECONE] Indexed: {vector_id}")
-
+                pinecone_index.upsert([(vector_id, embedding, {"filename": filename, "text": chunk})])
+                logger.info(f"[PINECONE] Indexed: {vector_id}")
             except Exception as e:
-                logging.error(f"[PINECONE EMBEDDING ERROR] {filename} chunk {i} → {e}")
+                logger.error(f"[PINECONE ERROR] {filename} chunk {i} → {e}")
 
         indexed_files.append((filename, len(chunks)))
 
-    # Final summary log
-    logging.info(f"[SUMMARY] Total files indexed: {len(indexed_files)}")
+    logger.info(f"[SUMMARY] Total files indexed: {len(indexed_files)}")
     for fname, count in indexed_files:
-        logging.info(f"[SUMMARY] {fname} → {count} chunks indexed")
-
+        logger.info(f"[SUMMARY] {fname} → {count} chunks indexed")
 
 def search_pinecone_by_threshold(query, threshold=0.85):
     try:
-        # Get embedding for the query
         embedding = openai.Embedding.create(
             input=query,
             model="text-embedding-ada-002"
-        )['data'][0]['embedding']
+        )["data"][0]["embedding"]
 
-        # Query Pinecone for top K matches
         results = pinecone_index.query(
             vector=embedding,
             top_k=100,
@@ -110,23 +102,20 @@ def search_pinecone_by_threshold(query, threshold=0.85):
             text_snippet = metadata.get('text', '')[:100].replace('\n', ' ') + "..."
 
             if score >= threshold:
-                logging.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f}) → \"{text_snippet}\"")
+                logger.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f}) → \"{text_snippet}\"")
                 filtered.append(metadata.get('text'))
 
         return filtered or ["No relevant content found in repository."]
-    
     except Exception as e:
-        logging.error(f"[PINECONE SEARCH ERROR] {e}")
+        logger.error(f"[PINECONE SEARCH ERROR] {e}")
         return ["Pinecone search failed."]
 
-
-# === File Readers ===
 def read_docx(file_path):
     try:
         doc = Document(file_path)
         return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     except Exception as e:
-        logging.error(f"[DOCX READ ERROR] {e}")
+        logger.error(f"[DOCX READ ERROR] {e}")
         return ""
 
 def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
@@ -146,10 +135,10 @@ def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
             for cell in table.cells:
                 extracted_text.append(f"Cell[{cell.row_index},{cell.column_index}]: {cell.content}")
 
-        logging.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
+        logger.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
         return "\n".join(extracted_text)
     except Exception as e:
-        logging.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
+        logger.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
         return ""
 
 def read_pdf(file_path):
@@ -157,13 +146,12 @@ def read_pdf(file_path):
         reader = PdfReader(file_path)
         return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
     except Exception as e:
-        logging.error(f"[PDF READ ERROR] {e}")
+        logger.error(f"[PDF READ ERROR] {e}")
         return ""
 
-# === Azure Data Lake Reader ===
 def get_datalake_service_client():
-    account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-    account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+    account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+    account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
     return DataLakeServiceClient(
         account_url=f"https://{account_name}.dfs.core.windows.net",
         credential=account_key
@@ -171,12 +159,11 @@ def get_datalake_service_client():
 
 def read_files_from_datalake():
     try:
-        ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-        ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
-        FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
+        ACCOUNT_NAME = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+        ACCOUNT_KEY = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+        FILESYSTEM_NAME = os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
 
-        logging.info(f"[DATALAKE] Connecting to Data Lake: {ACCOUNT_NAME}, filesystem: {FILESYSTEM_NAME}")
-
+        logger.info(f"[DATALAKE] Connecting to {ACCOUNT_NAME}/{FILESYSTEM_NAME}")
         service_client = DataLakeServiceClient(
             account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
             credential=ACCOUNT_KEY
@@ -185,50 +172,48 @@ def read_files_from_datalake():
         paths = file_system_client.get_paths()
 
         docs_info = []
-        file_count = 0
 
         for path in paths:
             if path.is_directory:
                 continue
             try:
                 file_path = path.name
-                logging.info(f"[DATALAKE] Reading file: {file_path}")
-
                 file_client = file_system_client.get_file_client(file_path)
                 download = file_client.download_file()
                 file_data = download.readall()
 
+                if len(file_data) > 10 * 1024 * 1024:
+                    logger.warning(f"[SKIPPED] File too large: {file_path}")
+                    continue
+
                 text = ""
                 if file_path.lower().endswith(".pdf"):
-                    logging.info(f"[DATALAKE] Detected PDF: {file_path}")
                     text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=file_path)
                 elif file_path.lower().endswith(".docx"):
-                    logging.info(f"[DATALAKE] Detected DOCX: {file_path}")
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                         tmp.write(file_data)
                         tmp.flush()
                         text = read_docx(tmp.name)
-                else:
-                    logging.info(f"[DATALAKE] Detected text file: {file_path}")
+                elif file_path.lower().endswith(".txt"):
                     text = file_data.decode("utf-8", errors="ignore")
+                else:
+                    logger.warning(f"[SKIPPED] Unsupported file type: {file_path}")
 
                 if text.strip():
-                    char_count = len(text)
-                    logging.info(f"[DATALAKE] Extracted {char_count} characters from: {file_path}")
                     docs_info.append({"filename": file_path, "text": text})
+                    logger.info(f"[DATALAKE] Loaded {file_path} ({len(text)} chars)")
                 else:
-                    logging.warning(f"[DATALAKE] No content extracted from: {file_path}")
+                    logger.warning(f"[DATALAKE] Empty content: {file_path}")
 
             except Exception as e:
-                logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {e}")
+                logger.error(f"[DATALAKE READ ERROR] {path.name} => {e}")
 
-        logging.info(f"[DATALAKE] Total files processed: {len(docs_info)}")
+        logger.info(f"[DATALAKE] Processed {len(docs_info)} files.")
         return docs_info
 
     except Exception as e:
-        logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
+        logger.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
-
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
@@ -271,53 +256,28 @@ def calculate_max_tokens(word_count):
 
 def answer_question_from_repository(user_question):
     try:
-        logging.info("[REPO QA] Reading documents from repository for QA")
-        azure_docs = read_files_from_datalake()
-        full_text_sections = []
+        logger.info("[REPO QA] Using Pinecone to retrieve relevant repository context")
+        pinecone_matches = search_pinecone_by_threshold(user_question, threshold=0.85)
 
-        for doc in azure_docs:
-            filename = doc.get("filename", "unknown").strip()
-            content = doc.get("text", "").strip()
+        combined_context = "\n\n".join(pinecone_matches)
+        token_estimate = int(len(combined_context.split()) * 1.5)
+        logger.info(f"[REPO QA] Retrieved {len(pinecone_matches)} matches, estimated token usage: {token_estimate}")
 
-            # Attempt PDF reprocessing if needed
-            if filename.lower().endswith(".pdf") and not content:
-                logging.info(f"[REPO QA] Reprocessing PDF using Form Recognizer: {filename}")
-                try:
-                    file_client = get_datalake_service_client().get_file_system_client(
-                        os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
-                    ).get_file_client(filename)
-                    download = file_client.download_file()
-                    file_data = download.readall()
-                    content = analyze_pdf_with_ai(io.BytesIO(file_data), filename=filename)
-                except Exception as e:
-                    logging.error(f"[REPO QA] Failed to reprocess PDF: {filename} → {e}")
-
-            if content:
-                logging.info(f"[REPO QA] Document loaded: {filename} ({len(content)} characters)")
-                full_text_sections.append(f"[FILE: {filename}]\n{content}")
-            else:
-                logging.warning(f"[REPO QA] Skipping empty/unreadable file: {filename}")
-
-        if not full_text_sections:
-            logging.warning("[REPO QA] No valid content extracted from repository.")
+        if not combined_context.strip():
+            logger.warning("[REPO QA] No relevant context found in Pinecone.")
             return "No valid repository content available for answering the question."
 
-        full_text = "\n\n".join(full_text_sections)
-        estimated_tokens = int(len(full_text.split()) * 1.5)
-        logging.info(f"[REPO QA] Combined repository word count: {len(full_text.split())}")
-        logging.info(f"[REPO QA] Estimated token usage: {estimated_tokens}")
-
-        if estimated_tokens > 100000:
-            logging.warning("⚠️ [REPO QA] Repository content approaching or exceeding GPT-4 Turbo's token limit (~128K). Trimming may be needed.")
+        if token_estimate > 100000:
+            logger.warning("⚠️ [REPO QA] Retrieved content may exceed GPT-4 Turbo's token limit (~128K).")
 
         prompt = f"""
-You are a technical assistant. Use ONLY the repository content below to answer the user's question.
-Be detailed, accurate, and cite the filename if relevant.
-If the answer is not present in the content, respond strictly with:
+You are a technical assistant. Use ONLY the content below (retrieved from a vector database) to answer the user's question.
+Be detailed, accurate, and cite any filenames if present.
+If the answer is not present, respond with:
 "The answer is not available in the repository documents."
 
-# Repository Content:
-\"\"\"{full_text}\"\"\"
+# Retrieved Repository Content:
+\"\"\"{combined_context}\"\"\"
 
 # User Question:
 {user_question}
@@ -331,11 +291,11 @@ If the answer is not present in the content, respond strictly with:
         )
 
         answer = response.choices[0].message.content.strip()
-        logging.info("[REPO QA] Answer retrieved successfully")
+        logger.info("[REPO QA] Answer successfully generated using Pinecone context")
         return answer
 
     except Exception as e:
-        logging.error(f"[REPO QA ERROR] {e}")
+        logger.error(f"[REPO QA ERROR] {e}")
         return "Unable to answer the question due to an internal error."
 
 # === Question Answering ===
