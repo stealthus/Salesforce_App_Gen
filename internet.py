@@ -27,26 +27,42 @@ SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-4-turbo"
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-if os.getenv("PINECONE_INDEX_NAME") not in pc.list_indexes().names():
+
+# === Read index name and region from environment variables ===
+index_name = os.getenv("PINECONE_INDEX_NAME")
+region = os.getenv("PINECONE_ENV")  # e.g., "us-east1"
+
+# === Create index if it doesn't exist ===
+if index_name not in pc.list_indexes().names():
+    logging.info(f"[PINECONE] Creating index '{index_name}' in region '{region}'...")
     pc.create_index(
-        name=os.getenv("PINECONE_INDEX_NAME"),
+        name=index_name,
         dimension=1536,
         metric="cosine",
         spec=ServerlessSpec(
             cloud="aws",
-            region=os.getenv("PINECONE_ENV") + "-aws"
+            region=region
         )
     )
-pinecone_index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
+else:
+    logging.info(f"[PINECONE] Index '{index_name}' already exists.")
+
+# === Connect to the index ===
+pinecone_index = pc.Index(index_name)
 
 def index_documents_to_pinecone(docs_info):
+    indexed_files = []  # Keep track of indexed filenames and chunk counts
+
     for doc in docs_info:
         filename = doc.get("filename")
         text = doc.get("text", "").strip()
         if not text:
+            logging.warning(f"[INDEXING SKIPPED] Empty content in file: {filename}")
             continue
 
         chunks = chunk_text(text, max_words=300)
+        logging.info(f"[CHUNKING] File '{filename}' split into {len(chunks)} chunks.")
+
         for i, chunk in enumerate(chunks):
             try:
                 embedding = openai.Embedding.create(
@@ -55,31 +71,54 @@ def index_documents_to_pinecone(docs_info):
                 )['data'][0]['embedding']
 
                 vector_id = f"{filename}__chunk_{i}"
-                pinecone_index.upsert([(vector_id, embedding, {"filename": filename, "text": chunk})])
+                pinecone_index.upsert([
+                    (vector_id, embedding, {"filename": filename, "text": chunk})
+                ])
                 logging.info(f"[PINECONE] Indexed: {vector_id}")
 
             except Exception as e:
                 logging.error(f"[PINECONE EMBEDDING ERROR] {filename} chunk {i} → {e}")
 
+        indexed_files.append((filename, len(chunks)))
+
+    # Final summary log
+    logging.info(f"[SUMMARY] Total files indexed: {len(indexed_files)}")
+    for fname, count in indexed_files:
+        logging.info(f"[SUMMARY] {fname} → {count} chunks indexed")
+
+
 def search_pinecone_by_threshold(query, threshold=0.85):
     try:
+        # Get embedding for the query
         embedding = openai.Embedding.create(
             input=query,
             model="text-embedding-ada-002"
         )['data'][0]['embedding']
 
-        results = pinecone_index.query(vector=embedding, top_k=100, include_metadata=True)
-        filtered = [
-            match['metadata']['text']
-            for match in results['matches']
-            if match['score'] >= threshold
-        ]
+        # Query Pinecone for top K matches
+        results = pinecone_index.query(
+            vector=embedding,
+            top_k=100,
+            include_metadata=True
+        )
+
+        filtered = []
+        for match in results['matches']:
+            score = match['score']
+            metadata = match.get('metadata', {})
+            filename = metadata.get('filename', 'Unknown')
+            text_snippet = metadata.get('text', '')[:100].replace('\n', ' ') + "..."
+
+            if score >= threshold:
+                logging.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f}) → \"{text_snippet}\"")
+                filtered.append(metadata.get('text'))
+
         return filtered or ["No relevant content found in repository."]
+    
     except Exception as e:
         logging.error(f"[PINECONE SEARCH ERROR] {e}")
         return ["Pinecone search failed."]
 
-print("Interet")
 
 # === File Readers ===
 def read_docx(file_path):
@@ -194,7 +233,9 @@ def read_files_from_datalake():
 # === Helpers ===
 def chunk_text(text, max_words=1200):
     words = text.split()
-    return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+    chunks = [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+    logging.info(f"[CHUNKING] Created {len(chunks)} chunks (max {max_words} words each).")
+    return chunks
 
 def summarize_text(text, max_tokens=800):
     try:
@@ -440,6 +481,36 @@ Respond with only the exact category name.
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
+def list_indexed_vector_ids():
+    try:
+        stats = pinecone_index.describe_index_stats()
+        total_vectors = stats.get("total_vector_count", 0)
+        logging.info(f"[PINECONE] Total vectors currently in index: {total_vectors}")
+    except Exception as e:
+        logging.error(f"[PINECONE DIAGNOSTIC ERROR] {e}")
+
+if __name__ == "__main__":
+    logging.info("[MAIN] ====== Starting Repository Indexing Process ======")
+
+    docs_info = read_files_from_datalake()
+    logging.info(f"[MAIN] Total documents fetched from Data Lake: {len(docs_info)}")
+
+    for doc in docs_info:
+        filename = doc.get("filename")
+        text_length = len(doc.get("text", ""))
+        logging.info(f"[MAIN] Document Loaded → {filename} ({text_length} characters)")
+
+    if docs_info:
+        logging.info("[MAIN] Indexing documents into Pinecone...")
+        index_documents_to_pinecone(docs_info)
+        logging.info("[MAIN] ✅ Pinecone indexing completed.")
+    else:
+        logging.warning("[MAIN] No documents found to index — skipping Pinecone upload.")
+
+    list_indexed_vector_ids()
+    logging.info("[MAIN] ====== Indexing Routine Complete ======")   
+
 
 
 

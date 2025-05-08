@@ -17,3 +17,4 @@ azure-ai-formrecognizer
 azure-identity
 azure-storage-file-datalake
 pinecone
+tenacity>=8.2.2
