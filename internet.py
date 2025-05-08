@@ -12,6 +12,7 @@ import tempfile
 import io
 import re
 from pinecone import Pinecone, ServerlessSpec
+from tenacity import retry, wait_fixed, stop_after_attempt
 
 # === Logging Setup ===
 logging.basicConfig(
