@@ -69,6 +69,10 @@ def index_documents_to_pinecone(docs_info):
 
         for i, chunk in enumerate(chunks):
             try:
+                if not chunk.strip():
+                    logger.warning(f"[SKIPPED] Empty chunk at {filename}__chunk_{i}")
+                    continue
+
                 embedding = get_embedding(chunk)
                 vector_id = f"{filename}__chunk_{i}"
                 pinecone_index.upsert([(vector_id, embedding, {"filename": filename, "text": chunk})])
@@ -81,6 +85,7 @@ def index_documents_to_pinecone(docs_info):
     logger.info(f"[SUMMARY] Total files indexed: {len(indexed_files)}")
     for fname, count in indexed_files:
         logger.info(f"[SUMMARY] {fname} → {count} chunks indexed")
+
 
 def search_pinecone_by_threshold(query, threshold=0.85):
     try:
@@ -104,12 +109,13 @@ def search_pinecone_by_threshold(query, threshold=0.85):
 
             if score >= threshold:
                 logger.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f}) → \"{text_snippet}\"")
-                filtered.append(metadata.get('text'))
+                filtered.append(f"[SOURCE: {filename}]\n{metadata.get('text')}")
 
         return filtered or ["No relevant content found in repository."]
     except Exception as e:
         logger.error(f"[PINECONE SEARCH ERROR] {e}")
         return ["Pinecone search failed."]
+
 
 
 def read_docx(file_path):
@@ -136,6 +142,9 @@ def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
             extracted_text.append("\n--- Table ---")
             for cell in table.cells:
                 extracted_text.append(f"Cell[{cell.row_index},{cell.column_index}]: {cell.content}")
+        if result.key_value_pairs:
+            for pair in result.key_value_pairs:
+                extracted_text.append(f"{pair.key.content}: {pair.value.content}")
 
         logger.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
         return "\n".join(extracted_text)
@@ -217,6 +226,8 @@ def read_files_from_datalake():
     except Exception as e:
         logger.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
+
+
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
