@@ -72,10 +72,13 @@ def index_documents_to_pinecone(docs_info):
                 if not chunk.strip():
                     logger.warning(f"[SKIPPED] Empty chunk at {filename}__chunk_{i}")
                     continue
-
+                logger.debug(f"[CHUNK] {filename}__chunk_{i}: {chunk[:200]}...")
                 embedding = get_embedding(chunk)
                 vector_id = f"{filename}__chunk_{i}"
-                pinecone_index.upsert([(vector_id, embedding, {"filename": filename, "text": chunk})])
+                pinecone_index.upsert([(vector_id, embedding, {
+                    "filename": filename,
+                    "text": chunk
+                })])
                 logger.info(f"[PINECONE] Indexed: {vector_id}")
             except Exception as e:
                 logger.error(f"[PINECONE ERROR] {filename} chunk {i} → {e}")
@@ -86,6 +89,7 @@ def index_documents_to_pinecone(docs_info):
     for fname, count in indexed_files:
         logger.info(f"[SUMMARY] {fname} → {count} chunks indexed")
 
+# Updated retrieval function to ensure verbatim match support
 
 def search_pinecone_by_threshold(query, threshold=0.85):
     try:
@@ -105,17 +109,16 @@ def search_pinecone_by_threshold(query, threshold=0.85):
             score = match['score']
             metadata = match.get('metadata', {})
             filename = metadata.get('filename', 'Unknown')
-            text_snippet = metadata.get('text', '')[:100].replace('\n', ' ') + "..."
+            chunk_text = metadata.get('text', '')
 
             if score >= threshold:
-                logger.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f}) → \"{text_snippet}\"")
-                filtered.append(f"[SOURCE: {filename}]\n{metadata.get('text')}")
+                logger.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f})")
+                filtered.append(f"[SOURCE: {filename}]\n{chunk_text.strip()}")
 
-        return filtered or ["No relevant content found in repository."]
+        return filtered if filtered else ["No relevant content found in repository."]
     except Exception as e:
         logger.error(f"[PINECONE SEARCH ERROR] {e}")
         return ["Pinecone search failed."]
-
 
 
 def read_docx(file_path):
