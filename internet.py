@@ -86,7 +86,7 @@ def search_pinecone_by_threshold(query, threshold=0.85):
     try:
         embedding = openai.Embedding.create(
             input=query,
-            model="text-embedding-ada-002"
+            model="text-embedding-3-large"
         )["data"][0]["embedding"]
 
         results = pinecone_index.query(
@@ -110,6 +110,7 @@ def search_pinecone_by_threshold(query, threshold=0.85):
     except Exception as e:
         logger.error(f"[PINECONE SEARCH ERROR] {e}")
         return ["Pinecone search failed."]
+
 
 def read_docx(file_path):
     try:
