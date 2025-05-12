@@ -204,6 +204,7 @@ def read_files_from_datalake():
                 if text.strip():
                     docs_info.append({"filename": file_path, "text": text})
                     logger.info(f"[DATALAKE] Loaded {file_path} ({len(text)} chars)")
+                    logger.info(f"[DATALAKE] Sample content from {file_path}: {text[:300]}")
                 else:
                     logger.warning(f"[DATALAKE] Empty content: {file_path}")
 
