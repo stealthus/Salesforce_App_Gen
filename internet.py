@@ -12,7 +12,7 @@ from llama_index.readers.file.simple import SimpleFileReader
 import tempfile
 import io
 import re
-
+import llama_index
 # === Logging Setup ===
 logging.basicConfig(
     level=logging.INFO,
