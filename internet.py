@@ -8,7 +8,11 @@ from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
-from llama_index.readers.file import SimpleFileReader
+from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms import OpenAI
+from llama_index.node_parser import SentenceWindowNodeParser
+from llama_index.text_splitter import SentenceSplitter
 import tempfile
 import io
 import re
@@ -138,10 +142,13 @@ def read_files_from_datalake():
         return []
 
 def read_repository_docs_with_llama():
+    # Azure Data Lake configuration
+    api_key = os.environ.get("OPENAI_API_KEY")
     ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
     ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
     FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
 
+    # Initialize Data Lake service client
     service_client = DataLakeServiceClient(
         account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
         credential=ACCOUNT_KEY
@@ -149,45 +156,59 @@ def read_repository_docs_with_llama():
     file_system_client = service_client.get_file_system_client(FILESYSTEM_NAME)
     paths = file_system_client.get_paths()
 
-    docs_info = []
-    for path in paths:
-        if path.is_directory:
-            continue
+    # Temporary directory to store downloaded files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for path in paths:
+            if path.is_directory:
+                continue
 
-        file_path = path.name
-        ext = file_path.split(".")[-1].lower()
-        if ext not in ["pdf", "docx", "txt"]:
-            continue
+            file_path = path.name
+            ext = file_path.split(".")[-1].lower()
+            if ext not in ["pdf", "docx", "txt"]:
+                continue
 
-        try:
-            file_client = file_system_client.get_file_client(file_path)
-            download = file_client.download_file()
-            file_data = download.readall()
+            try:
+                file_client = file_system_client.get_file_client(file_path)
+                download = file_client.download_file()
+                file_data = download.readall()
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                tmp.write(file_data)
-                tmp.flush()
+                # Save file to temporary directory
+                local_file_path = os.path.join(temp_dir, os.path.basename(file_path))
+                with open(local_file_path, "wb") as f:
+                    f.write(file_data)
 
-                reader = SimpleFileReader()
-                parsed_docs = reader.load_data(tmp.name)
+            except Exception as e:
+                logging.error(f"Error processing file {file_path}: {e}")
 
-                
+        # Initialize embedding model and LLM
+        embed_model = OpenAIEmbedding(api_key=api_key)
+        llm = OpenAI(api_key=api_key)
 
-                for doc in parsed_docs:
-                    text = doc.text.strip()
-                if text:
-                    words = text.split()
-                    for i, word in enumerate(words):
-                        logging.info(f"[LLAMA PARSE] {file_path} - Word {i+1}: {word}")
-                    docs_info.append({
-                        "filename": file_path,
-                        "text": text,
-                        "word_count": len(words)
-                    })
+        # Set up service context
+        service_context = ServiceContext.from_defaults(
+            embed_model=embed_model,
+            llm=llm
+        )
 
-        except Exception as e:
-            logging.error(f"[LLAMA ERROR] {file_path} → {e}")
-    return docs_info
+        # Load documents from the temporary directory
+        documents = SimpleDirectoryReader(temp_dir).load_data()
+
+        # Initialize text splitter and node parser
+        text_splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+        node_parser = SentenceWindowNodeParser.from_defaults(
+            window_size=3,
+            window_metadata_key="window",
+            original_text_metadata_key="original_text",
+            text_splitter=text_splitter
+        )
+
+        # Parse documents into nodes
+        nodes = node_parser.get_nodes_from_documents(documents)
+
+        # Create vector index
+        index = VectorStoreIndex(nodes, service_context=service_context)
+
+        return index
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
@@ -298,34 +319,16 @@ Prompt:
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
-        # === Step 3: Gather repository content ===
-        logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
+        # === Step 3: Gather repository content using LlamaIndex ===
+        logging.info("[STEP 3] Querying repository content from Azure Data Lake via LlamaIndex")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
-            azure_docs = read_repository_docs_with_llama()
-            logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
+            index = read_repository_docs_with_llama()
+            query_engine = index.as_query_engine()
+            azure_context = query_engine.query(user_prompt).response.strip()
+            logging.info("[REPO] LlamaIndex response for repository query obtained.")
 
-            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-            logging.info(f"[REPO] Keywords extracted: {keywords}")
-
-            doc_usage_log = []   # This will collect lines like: "filename → word_count words"
-            matches = []         # This will hold the matching content for GPT to use
-
-            for doc in azure_docs:
-                text = doc.get("text", "").lower()
-                if any(k in text for k in keywords):  # if any keyword is found in the document
-                    matches.append(doc["text"])  # Save the actual content for GPT to use
-                    doc_usage_log.append(f"{doc['filename']} → {doc['word_count']} words")  # Save which file matched
-
-            logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
-
-            if matches:
-                azure_context = safe_concatenate_and_trim(matches[:3], word_limit=3000)
-            else:
-                logging.warning("[REPO] No strong keyword matches found in repository.")
-                azure_context = "No strong repository content match found."
-
-        # === Step 4: Gather internet data ===
+        # === Step 4: Gather internet data (optional) ===
         logging.info("[STEP 4] Searching internet context (if required)")
         internet_data = ""
         if use_internet and mode == "full-context":
@@ -353,8 +356,6 @@ Prompt:
 
         # === Step 6: Build final prompt ===
         logging.info("[STEP 6] Constructing final prompt for OpenAI")
-        
-
         sections = [
             word_instruction,
             f"# User Prompt\n{user_prompt.strip()}",
@@ -365,8 +366,6 @@ Prompt:
             sections.append(f"# Repository Insights\n{azure_context.strip()}")
         if internet_data:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
-        if doc_usage_log:
-            sections = ["# Matched Repository Files\n" + "\n".join(doc_usage_log)] + sections
 
         final_prompt = "\n\n".join(sections)
         logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
@@ -388,3 +387,4 @@ Prompt:
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
