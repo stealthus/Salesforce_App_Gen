@@ -129,6 +129,11 @@ def read_files_from_datalake():
                 if text.strip():
                     char_count = len(text)
                     logging.info(f"[DATALAKE] Extracted {char_count} characters from: {file_path}")
+                    
+                    # ✅ Content preview (limit to 300 characters)
+                    preview = text[:300].replace("\n", " ").replace("\r", "")
+                    logging.info(f"[DATALAKE CONTENT PREVIEW] {file_path}:\n{preview}...")
+                    
                     docs_info.append({"filename": file_path, "text": text})
                 else:
                     logging.warning(f"[DATALAKE] No content extracted from: {file_path}")
@@ -136,7 +141,11 @@ def read_files_from_datalake():
             except Exception as e:
                 logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {e}")
 
+        # ✅ Summary log
         logging.info(f"[DATALAKE] Total files processed: {len(docs_info)}")
+        for doc in docs_info:
+            logging.info(f"[DATALAKE SUMMARY] {doc['filename']} (Length: {len(doc['text'])} characters)")
+
         return docs_info
 
     except Exception as e:
