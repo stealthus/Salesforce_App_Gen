@@ -1,6 +1,6 @@
 Flask
 flask-cors
-openai==0.28.1
+openai>=1.1.0
 python-docx
 PyPDF2
 fpdf
