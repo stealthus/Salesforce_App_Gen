@@ -18,3 +18,5 @@ azure-identity
 azure-storage-file-datalake
 pinecone
 tenacity>=8.2.2
+boto3>=1.26.0
+llama-index==0.10.30

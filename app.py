@@ -4,16 +4,23 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 import tempfile
 import logging
-from internet import read_docx, read_pdf, generate_comprehensive_proposal, index_documents_to_pinecone,  read_files_from_datalake
 
+from internet import (
+    read_docx,
+    read_pdf,
+    generate_comprehensive_proposal,
+    index_documents_to_pinecone,
+    read_files_from_datalake,
+    list_indexed_vector_ids
+)
 
 # === App Setup ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})  # Adjust if needed
+app.wsgi_app = ProxyFix(app.wsgi_app)
 
-print("Flask app")
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger()
+logger = logging.getLogger("flask-app")
 
 # === Proposal Generation Endpoint ===
 @app.route("/generate", methods=["POST"])
@@ -35,6 +42,8 @@ def generate_proposal():
                 document_text = read_pdf(file_path)
             elif ext == ".docx":
                 document_text = read_docx(file_path)
+            elif ext == ".txt":
+                document_text = uploaded_file.read().decode("utf-8", errors="ignore")
             else:
                 return jsonify({"error": "Unsupported file format"}), 400
 
@@ -51,16 +60,14 @@ def generate_proposal():
                 use_internet=use_internet
             )
 
-            logger.info("[RESPONSE] Sending generated text to frontend.")
-
-            response = jsonify({"generated_text": result})
-            response.headers["Content-Type"] = "application/json"
-            return response
+            logger.info("[RESPONSE] Proposal sent to frontend.")
+            return jsonify({"generated_text": result}), 200
 
     except Exception as e:
         logger.exception("[ERROR] Internal server error")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-    
+
+# === Trigger Indexing from Azure Data Lake ===
 @app.route("/triggerindex", methods=["POST"])
 def trigger_index():
     api_key = request.headers.get("x-api-key")
@@ -70,20 +77,27 @@ def trigger_index():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        docs_info = read_files_from_datalake()
-        if docs_info:
-            index_documents_to_pinecone(docs_info)
-            return jsonify({
-                "message": "✅ Indexing completed",
-                "files_indexed": len(docs_info),
-                "filenames": [doc["filename"] for doc in docs_info]
-            }), 200
-        else:
-            return jsonify({"message": "⚠️ No valid documents found"}), 200
+        read_files_from_datalake()
+        return jsonify({"message": "✅ Indexing triggered from Data Lake"}), 200
+    except Exception as e:
+        logger.error(f"[TRIGGER ERROR] {e}")
+        return jsonify({"error": str(e)}), 500
+
+# === List Indexed Vectors (Optional Debug Route) ===
+@app.route("/list-indexed", methods=["GET"])
+def list_indexed_vectors():
+    try:
+        list_indexed_vector_ids()
+        return jsonify({"message": "🧠 Vector index listing complete"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === Frontend Serving ===
+# === Health Check ===
+@app.route("/healthz", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok"}), 200
+
+# === React Frontend Routing ===
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_react(path):
@@ -92,12 +106,8 @@ def serve_react(path):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.static_folder, "index.html")
 
-# === Azure WSGI Setup ===
-if __name__ != "__main__":
-    app.wsgi_app = ProxyFix(app.wsgi_app)
-
-# === Local Development Server ===
+# === Run Local Dev Server ===
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"[INFO] Starting server on port {port}")
+    logger.info(f"[INFO] Starting Flask server on port {port}")
     app.run(host="0.0.0.0", port=port, debug=True)

@@ -5,6 +5,9 @@ import logging
 import requests
 from docx import Document
 from PyPDF2 import PdfReader
+from llama_index.readers.file.base import DEFAULT_FILE_READER_CLS
+from llama_index.readers.file.base import SimpleFileReader
+from llama_index import Document
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
@@ -111,11 +114,17 @@ def search_pinecone_by_threshold(query, threshold=0.85):
             filename = metadata.get('filename', 'Unknown')
             chunk_text = metadata.get('text', '')
 
+            logger.info(f"[PINECONE SEARCH RESULT] Match from {filename} with score {score:.4f}")
+            logger.debug(f"[PINECONE MATCH TEXT] {chunk_text[:300]}...")
+
             if score >= threshold:
-                logger.info(f"[PINECONE SEARCH] Match from {filename} (score: {score:.4f})")
+                # ✅ Fix f-string formatting here
                 filtered.append(f"[SOURCE: {filename}]\n{chunk_text.strip()}")
 
-        return filtered if filtered else ["No relevant content found in repository."]
+        if not filtered:
+            logger.warning("[PINECONE SEARCH] No relevant content found for query.")
+        return filtered or ["No relevant content found in repository."]
+
     except Exception as e:
         logger.error(f"[PINECONE SEARCH ERROR] {e}")
         return ["Pinecone search failed."]
@@ -177,7 +186,7 @@ def read_files_from_datalake():
         ACCOUNT_KEY = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
         FILESYSTEM_NAME = os.getenv("AZURE_DATA_LAKE_FILESYSTEM")
 
-        logger.info(f"[DATALAKE] Connecting to {ACCOUNT_NAME}/{FILESYSTEM_NAME}")
+        logger.info(f"[DATALAKE] Connecting to: https://{ACCOUNT_NAME}.dfs.core.windows.net/{FILESYSTEM_NAME}")
         service_client = DataLakeServiceClient(
             account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
             credential=ACCOUNT_KEY
@@ -185,50 +194,58 @@ def read_files_from_datalake():
         file_system_client = service_client.get_file_system_client(FILESYSTEM_NAME)
         paths = file_system_client.get_paths()
 
-        docs_info = []
+        total_indexed = 0
 
         for path in paths:
             if path.is_directory:
                 continue
+
+            file_path = path.name
+            ext = file_path.split('.')[-1].lower()
+            if ext not in ["pdf", "docx", "txt"]:
+                logger.warning(f"[SKIPPED] Unsupported file type: {file_path}")
+                continue
+
             try:
-                file_path = path.name
                 file_client = file_system_client.get_file_client(file_path)
                 download = file_client.download_file()
                 file_data = download.readall()
 
-                if len(file_data) > 10 * 1024 * 1024:
+                if len(file_data) > 10 * 1024 * 1024:  # Skip >10MB
                     logger.warning(f"[SKIPPED] File too large: {file_path}")
                     continue
 
-                text = ""
-                if file_path.lower().endswith(".pdf"):
-                    text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=file_path)
-                elif file_path.lower().endswith(".docx"):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-                        tmp.write(file_data)
-                        tmp.flush()
-                        text = read_docx(tmp.name)
-                elif file_path.lower().endswith(".txt"):
-                    text = file_data.decode("utf-8", errors="ignore")
-                else:
-                    logger.warning(f"[SKIPPED] Unsupported file type: {file_path}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                    tmp.write(file_data)
+                    tmp.flush()
 
-                if text.strip():
-                    docs_info.append({"filename": file_path, "text": text})
-                    logger.info(f"[DATALAKE] Loaded {file_path} ({len(text)} chars)")
-                    logger.info(f"[DATALAKE] Sample content from {file_path}: {text[:300]}")
-                else:
-                    logger.warning(f"[DATALAKE] Empty content: {file_path}")
+                    reader = DEFAULT_FILE_READER_CLS(ext)
+                    parsed_docs = reader.load_data(tmp.name)
+
+                    for i, doc in enumerate(parsed_docs):
+                        content = doc.text.strip()
+                        if not content:
+                            logger.warning(f"[EMPTY] Skipping empty content from {file_path}")
+                            continue
+
+                        logger.info(f"[PARSED] {file_path} (Doc {i+1})")
+                        logger.info(f"[PREVIEW] {content[:300]}{'...' if len(content) > 300 else ''}")
+
+                        # ✅ Send to Pinecone immediately
+                        doc_info = [{"filename": file_path, "text": content}]
+                        index_documents_to_pinecone(doc_info)
+                        total_indexed += 1
 
             except Exception as e:
-                logger.error(f"[DATALAKE READ ERROR] {path.name} => {e}")
+                logger.error(f"[DATALAKE READ ERROR] {file_path} → {e}")
 
-        logger.info(f"[DATALAKE] Processed {len(docs_info)} files.")
-        return docs_info
+        logger.info(f"[DATALAKE] ✅ Total documents parsed and indexed: {total_indexed}")
+        return []  # or return a summary if needed
 
     except Exception as e:
         logger.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
+
 
 
 
