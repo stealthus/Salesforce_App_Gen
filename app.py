@@ -4,15 +4,12 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 import tempfile
 import logging
-from internet import read_docx, read_pdf, generate_comprehensive_proposal, index_documents_to_pinecone,  read_files_from_datalake
-
-print("Flask end point")
+from internet import read_docx, read_pdf, generate_comprehensive_proposal
 
 # === App Setup ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
 CORS(app)
 
-print("Flask app")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
@@ -43,7 +40,6 @@ def generate_proposal():
                 return jsonify({"error": "Empty document"}), 400
 
             docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
-            index_documents_to_pinecone(docs_info)
 
             result = generate_comprehensive_proposal(
                 requirements_text=document_text,
@@ -61,28 +57,6 @@ def generate_proposal():
     except Exception as e:
         logger.exception("[ERROR] Internal server error")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-    
-@app.route("/triggerindex", methods=["POST"])
-def trigger_index():
-    api_key = request.headers.get("x-api-key")
-    expected_key = os.getenv("ADMIN_API_KEY")
-
-    if expected_key and api_key != expected_key:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    try:
-        docs_info = read_files_from_datalake()
-        if docs_info:
-            index_documents_to_pinecone(docs_info)
-            return jsonify({
-                "message": "✅ Indexing completed",
-                "files_indexed": len(docs_info),
-                "filenames": [doc["filename"] for doc in docs_info]
-            }), 200
-        else:
-            return jsonify({"message": "⚠️ No valid documents found"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # === Frontend Serving ===
 @app.route("/", defaults={"path": ""})

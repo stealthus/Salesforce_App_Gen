@@ -1,6 +1,6 @@
 Flask
 flask-cors
-openai>=1.1.0
+openai==0.28.1
 python-docx
 PyPDF2
 fpdf
@@ -19,4 +19,3 @@ azure-storage-file-datalake
 pinecone
 tenacity>=8.2.2
 boto3>=1.26.0
-llama-index
