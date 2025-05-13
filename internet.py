@@ -8,7 +8,7 @@ from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
-from llama_index.readers.file.base import DEFAULT_FILE_READER_CLS
+from llama_index.readers.file import SimpleFileReader
 import tempfile
 import io
 import re
@@ -168,8 +168,10 @@ def read_repository_docs_with_llama():
                 tmp.write(file_data)
                 tmp.flush()
 
-                reader = DEFAULT_FILE_READER_CLS(ext)
+                reader = SimpleFileReader()
                 parsed_docs = reader.load_data(tmp.name)
+
+                
 
                 for doc in parsed_docs:
                     text = doc.text.strip()
