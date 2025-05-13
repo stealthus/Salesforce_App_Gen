@@ -1,7 +1,7 @@
 import os
 import sys
 from openai import OpenAI
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 import logging
 import requests
 import tempfile
@@ -29,7 +29,6 @@ logging.basicConfig(
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 # === Environment Variables ===
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-4-turbo"
 
@@ -220,7 +219,7 @@ def chunk_text(text, max_words=1200):
 
 def summarize_text(text, max_tokens=800):
     try:
-        response = client.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": "Summarize technical content concisely."},
@@ -269,7 +268,7 @@ Question:
 
 If the answer is not found, say: "The answer is not available in the document."
 """
-            response = client.chat.completions.create(
+            response = openai_client.chat.completions.create(
                 model=MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=400,
@@ -313,7 +312,7 @@ Classify this prompt into one of the following:
 Prompt:
 {user_prompt.strip()}
 """
-        intent_response = client.chat.completions.create(
+        intent_response = openai_client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": intent_prompt.strip()}],
             max_tokens=10,
@@ -375,7 +374,7 @@ Prompt:
 
         # === Step 7: Call OpenAI ===
         logging.info("[STEP 7] Calling OpenAI to generate final proposal")
-        response = client.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": "You are a technical expert and must strictly follow the user's instructions, especially regarding word count."},
