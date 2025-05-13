@@ -30,6 +30,8 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 MODEL = "gpt-4-turbo"
 
+print("Internet")
+
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX_NAME")
 region = os.getenv("PINECONE_ENV")
