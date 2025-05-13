@@ -8,7 +8,7 @@ from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
-from llama_index.readers.file.simple import SimpleFileReader
+from llama_index.readers.file import SimpleFileReader
 import tempfile
 import io
 import re
