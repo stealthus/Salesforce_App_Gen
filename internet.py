@@ -8,6 +8,7 @@ from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
+from llama_index.readers.file.base import DEFAULT_FILE_READER_CLS
 import tempfile
 import io
 import re
@@ -23,7 +24,7 @@ logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 # === Environment Variables ===
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-3.5-turbo"
+MODEL = "gpt-4-turbo"
 
 print("hello")
 
@@ -136,6 +137,55 @@ def read_files_from_datalake():
         logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
 
+def read_repository_docs_with_llama():
+    ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+    ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+    FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
+
+    service_client = DataLakeServiceClient(
+        account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
+        credential=ACCOUNT_KEY
+    )
+    file_system_client = service_client.get_file_system_client(FILESYSTEM_NAME)
+    paths = file_system_client.get_paths()
+
+    docs_info = []
+    for path in paths:
+        if path.is_directory:
+            continue
+
+        file_path = path.name
+        ext = file_path.split(".")[-1].lower()
+        if ext not in ["pdf", "docx", "txt"]:
+            continue
+
+        try:
+            file_client = file_system_client.get_file_client(file_path)
+            download = file_client.download_file()
+            file_data = download.readall()
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                tmp.write(file_data)
+                tmp.flush()
+
+                reader = DEFAULT_FILE_READER_CLS(ext)
+                parsed_docs = reader.load_data(tmp.name)
+
+                for doc in parsed_docs:
+                    text = doc.text.strip()
+                if text:
+                    words = text.split()
+                    for i, word in enumerate(words):
+                        logging.info(f"[LLAMA PARSE] {file_path} - Word {i+1}: {word}")
+                    docs_info.append({
+                        "filename": file_path,
+                        "text": text,
+                        "word_count": len(words)
+                    })
+
+        except Exception as e:
+            logging.error(f"[LLAMA ERROR] {file_path} → {e}")
+    return docs_info
 
 # === Helpers ===
 def chunk_text(text, max_words=1200):
@@ -250,13 +300,21 @@ Prompt:
         logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
-            azure_docs = read_files_from_datalake()
+            azure_docs = read_repository_docs_with_llama()
             logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
 
             keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
             logging.info(f"[REPO] Keywords extracted: {keywords}")
 
-            matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
+            doc_usage_log = []   # This will collect lines like: "filename → word_count words"
+            matches = []         # This will hold the matching content for GPT to use
+
+            for doc in azure_docs:
+                text = doc.get("text", "").lower()
+                if any(k in text for k in keywords):  # if any keyword is found in the document
+                    matches.append(doc["text"])  # Save the actual content for GPT to use
+                    doc_usage_log.append(f"{doc['filename']} → {doc['word_count']} words")  # Save which file matched
+
             logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
 
             if matches:
@@ -293,6 +351,8 @@ Prompt:
 
         # === Step 6: Build final prompt ===
         logging.info("[STEP 6] Constructing final prompt for OpenAI")
+        
+
         sections = [
             word_instruction,
             f"# User Prompt\n{user_prompt.strip()}",
@@ -303,6 +363,8 @@ Prompt:
             sections.append(f"# Repository Insights\n{azure_context.strip()}")
         if internet_data:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
+        if doc_usage_log:
+            sections = ["# Matched Repository Files\n" + "\n".join(doc_usage_log)] + sections
 
         final_prompt = "\n\n".join(sections)
         logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
