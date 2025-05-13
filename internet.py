@@ -3,20 +3,22 @@ import sys
 import openai
 import logging
 import requests
+import tempfile
+import io
+import re
+
 from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
-from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
+
+# LlamaIndex updated imports (as per v0.10.30 modular structure)
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms import OpenAI
-from llama_index.node_parser import SentenceWindowNodeParser
-from llama_index.text_splitter import SentenceSplitter
-import tempfile
-import io
-import re
-import llama_index
+from llama_index.llms.openai import OpenAI
+from llama_index.core.node_parser import SentenceWindowNodeParser
+from llama_index.core.text_splitter import SentenceSplitter
 # === Logging Setup ===
 logging.basicConfig(
     level=logging.INFO,
