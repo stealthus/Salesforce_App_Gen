@@ -1,40 +1,48 @@
 import os
-import sys
-from openai import OpenAI
-openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-import logging
-import requests
 import tempfile
+import logging
 import io
-import re
-
 from docx import Document
 from PyPDF2 import PdfReader
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
-
-# LlamaIndex updated imports (as per v0.10.30 modular structure)
+from openai import OpenAI as OpenAIClient
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from llama_index.core.node_parser import SentenceWindowNodeParser
 from llama_index.core.text_splitter import SentenceSplitter
+from llama_index.vector_stores.pinecone import PineconeVectorStore
+from llama_index.core import StorageContext
+from pinecone import Pinecone, ServerlessSpec
+
 # === Logging Setup ===
-logging.basicConfig(
-    level=logging.INFO,
-    stream=sys.stdout,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # === Environment Variables ===
-SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-4-turbo"
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+pinecone_api_key = os.environ.get("PINECONE_API_KEY")
+pinecone_env = os.environ.get("PINECONE_ENVIRONMENT")
+pinecone_index_name = os.environ.get("PINECONE_INDEX_NAME")
+serp_api_key = os.environ.get("SERP_API_KEY")
+account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+filesystem_name = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
 
-print("hello")
+# === Initialize Clients ===
+openai_client = OpenAIClient(api_key=openai_api_key)
+pinecone_client = Pinecone(api_key=pinecone_api_key)
+if pinecone_index_name not in pinecone_client.list_indexes().names():
+    pinecone_client.create_index(
+        name=pinecone_index_name,
+        dimension=1536,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="aws", region=pinecone_env)
+    )
+pinecone_index = pinecone_client.Index(pinecone_index_name)
 
-# === File Readers ===
+# === File Reader Utilities ===
 def read_docx(file_path):
     try:
         doc = Document(file_path)
@@ -60,7 +68,6 @@ def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
             for cell in table.cells:
                 extracted_text.append(f"Cell[{cell.row_index},{cell.column_index}]: {cell.content}")
 
-        logging.info(f"[FORM RECOGNIZER] Extracted {len(extracted_text)} lines from {filename}")
         return "\n".join(extracted_text)
     except Exception as e:
         logging.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
@@ -73,6 +80,63 @@ def read_pdf(file_path):
     except Exception as e:
         logging.error(f"[PDF READ ERROR] {e}")
         return ""
+
+# === Azure Data Lake Downloader ===
+def download_files_from_datalake():
+    service_client = DataLakeServiceClient(
+        account_url=f"https://{account_name}.dfs.core.windows.net",
+        credential=account_key
+    )
+    file_system_client = service_client.get_file_system_client(filesystem_name)
+    paths = file_system_client.get_paths()
+
+    temp_dir = tempfile.mkdtemp()
+
+    for path in paths:
+        if path.is_directory:
+            continue
+
+        file_path = path.name
+        ext = file_path.split(".")[-1].lower()
+        if ext not in ["pdf", "docx", "txt"]:
+            continue
+
+        try:
+            file_client = file_system_client.get_file_client(file_path)
+            data = file_client.download_file().readall()
+            local_path = os.path.join(temp_dir, os.path.basename(file_path))
+            with open(local_path, "wb") as f:
+                f.write(data)
+            logging.info(f"Downloaded: {file_path}")
+        except Exception as e:
+            logging.error(f"Failed to download {file_path}: {e}")
+
+    return temp_dir
+
+# === Document Indexing into Pinecone ===
+def index_documents():
+    temp_dir = download_files_from_datalake()
+    documents = SimpleDirectoryReader(temp_dir).load_data()
+
+    embed_model = OpenAIEmbedding(api_key=openai_api_key)
+    llm = OpenAI(api_key=openai_api_key)
+    service_context = ServiceContext.from_defaults(embed_model=embed_model, llm=llm)
+
+    splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+    parser = SentenceWindowNodeParser.from_defaults(
+        window_size=3,
+        window_metadata_key="window",
+        original_text_metadata_key="original_text",
+        text_splitter=splitter
+    )
+    nodes = parser.get_nodes_from_documents(documents)
+
+    vector_store = PineconeVectorStore(pinecone_index=pinecone_index)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    index = VectorStoreIndex(nodes, storage_context=storage_context, service_context=service_context)
+    logging.info("Documents successfully indexed into Pinecone.")
+    return index
 
 # === Azure Data Lake Reader ===
 def get_datalake_service_client():
@@ -151,6 +215,20 @@ def read_files_from_datalake():
     except Exception as e:
         logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
         return []
+def get_top_chunks_from_repository(prompt, top_k=10):
+    try:
+        index = read_repository_docs_with_llama()
+        retriever = index.as_retriever(similarity_top_k=top_k)
+        nodes = retriever.retrieve(prompt)
+        chunks = [node.text.strip() for node in nodes if node.text and len(node.text.strip()) > 100]
+        logging.info(f"[REPO RETRIEVE] Retrieved {len(chunks)} rich chunks from repository.")
+        combined_text = "\n\n---\n\n".join(chunks)
+        preview = combined_text[:500].replace("\n", " ")
+        logging.info(f"[REPO PREVIEW] {preview}...")
+        return combined_text
+    except Exception as e:
+        logging.error(f"[REPO RETRIEVE ERROR] {e}")
+        return ""
 
 def read_repository_docs_with_llama():
     # Azure Data Lake configuration
@@ -300,17 +378,17 @@ def safe_concatenate_and_trim(docs, word_limit):
 
 
 # === Proposal Generation ===
+
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
     try:
-        # === Step 1: Summarize uploaded document ===
         logging.info("[STEP 1] Summarizing uploaded document")
         summarized_requirements = summarize_text(requirements_text, 800)
+
         uploaded_doc_text = safe_concatenate_and_trim(
             [doc.get("text", "") for doc in docs_info if doc.get("text")],
             word_limit=3000
         )
 
-        # === Step 2: Classify prompt intent ===
         logging.info("[STEP 2] Classifying user prompt intent")
         intent_prompt = f"""
 Classify this prompt into one of the following:
@@ -330,17 +408,16 @@ Prompt:
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
-        # === Step 3: Gather repository content using LlamaIndex ===
-        logging.info("[STEP 3] Querying repository content from Azure Data Lake via LlamaIndex")
-        azure_context = ""
-        if mode in ["repository-needed", "solution-needed", "full-context"]:
-            index = read_repository_docs_with_llama()
-            query_engine = index.as_query_engine()
-            azure_context = query_engine.query(user_prompt).response.strip()
-            logging.info("[REPO] LlamaIndex response for repository query obtained.")
+        # 🧠 Always query the repository (required regardless of internet flag)
+        logging.info("[STEP 3] Querying repository via LlamaIndex/Pinecone")
+        azure_context = get_top_chunks_from_repository(user_prompt, top_k=10)
+        if not azure_context.strip():
+            logging.warning("[REPO] No repository content was found.")
+        else:
+            logging.info("[REPO] Repository context successfully retrieved.")
 
-        # === Step 4: Gather internet data (optional) ===
-        logging.info("[STEP 4] Searching internet context (if required)")
+        # 🌐 Only include internet data if explicitly allowed AND full-context
+        logging.info("[STEP 4] Searching internet (if applicable)")
         internet_data = ""
         if use_internet and mode == "full-context":
             serp_results = serpapi_search(summarized_requirements)
@@ -352,41 +429,57 @@ Prompt:
                     f"Snippet: {result.get('snippet')}\n"
                     f"Summary: {snippet_summary}\n\n"
                 )
+        else:
+            logging.info("[INTERNET] Skipped due to use_internet=False or mode not full-context.")
 
-        # === Step 5: Calculate max token allowance ===
-        logging.info("[STEP 5] Calculating max token allowance")
+        # 🧮 Calculate token budget
+        logging.info("[STEP 5] Calculating token allowance")
         requested_words = extract_requested_word_count(user_prompt)
         dynamic_max_tokens = min(calculate_max_tokens(requested_words), 7000) if requested_words else 3500
 
-        word_instruction = ""
+        # 🧱 Build prompt sections conditionally
+        logging.info("[STEP 6] Constructing prompt for OpenAI")
+        sections = []
+
         if requested_words:
-            word_instruction = (
+            sections.append(
                 f"IMPORTANT: Your response must be at least {requested_words} words. "
-                "Do not stop early. Expand fully until reaching the requested word count."
+                "Do not stop early. Use all provided information thoroughly."
             )
 
-        # === Step 6: Build final prompt ===
-        logging.info("[STEP 6] Constructing final prompt for OpenAI")
-        sections = [
-            word_instruction,
-            f"# User Prompt\n{user_prompt.strip()}",
-            f"# Requirements Summary\n{summarized_requirements.strip()}",
-            f"# Uploaded Document Context\n{uploaded_doc_text.strip()}"
-        ]
-        if azure_context:
-            sections.append(f"# Repository Insights\n{azure_context.strip()}")
-        if internet_data:
-            sections.append(f"# Internet Findings\n{internet_data.strip()}")
+        sections.append("### USER PROMPT\n" + user_prompt.strip())
+        sections.append("### REQUIREMENTS SUMMARY\n" + summarized_requirements.strip())
+
+        if mode in ["question-about-uploaded-document", "full-context"]:
+            sections.append("### UPLOADED DOCUMENT CONTEXT\n" + uploaded_doc_text.strip())
+
+        if azure_context.strip():
+            sections.append(
+                "### REPOSITORY CONTENT (MANDATORY TO USE)\n"
+                "Below is relevant content from our internal repository. Reuse specific language, structure, and details wherever applicable.\n\n"
+                + azure_context.strip()
+            )
+
+        if internet_data.strip():
+            sections.append("### INTERNET FINDINGS (OPTIONAL)\n" + internet_data.strip())
+
+        sections.append(
+            "### INSTRUCTIONS TO LLM\n"
+            "Generate a comprehensive, structured RFP-style proposal based strictly on the above inputs.\n"
+            "Use professional formatting.\n"
+            "Your structure must include: Introduction, Objectives, Technical Approach, Timeline, Tools & Technologies, Compliance Strategy, and Conclusion.\n"
+            "Reuse exact terminology and language from repository context when applicable. Be factual, grounded, and non-speculative."
+        )
 
         final_prompt = "\n\n".join(sections)
-        logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
+        logging.info(f"[OPENAI] Final prompt word count: {len(final_prompt.split())}, max_tokens={dynamic_max_tokens}")
 
-        # === Step 7: Call OpenAI ===
-        logging.info("[STEP 7] Calling OpenAI to generate final proposal")
+        # 🧠 Call OpenAI
+        logging.info("[STEP 7] Calling OpenAI for proposal generation")
         response = openai_client.chat.completions.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": "You are a technical expert and must strictly follow the user's instructions, especially regarding word count."},
+                {"role": "system", "content": "You are a technical expert assistant."},
                 {"role": "user", "content": final_prompt}
             ],
             max_tokens=dynamic_max_tokens,
