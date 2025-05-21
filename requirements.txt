@@ -1,24 +1,38 @@
 Flask
 flask-cors
 gunicorn
+
 openai>=1.1.0
+tiktoken
+
 python-docx
 PyPDF2
 fpdf
 requests
 numpy
+
+# Azure SDKs
 azure-core
 azure-identity
 azure-storage-file-datalake
 azure-ai-formrecognizer
+
+# Logging & PDF extras
 werkzeug
+loguru
 pdfplumber
 pdfminer.six
-loguru
+
+# Pinecone & Retry
 pinecone-client
 tenacity>=8.2.2
 boto3>=1.26.0
+
+# LlamaIndex stack (compatible versions!)
 llama-index==0.10.30
-typing-extensions>=4.5.0
-tiktoken
+llama-index-core==0.10.30
+llama-index-vector-stores-pinecone==0.1.2
+
+# Optional: useful for chunking and parsing
 nltk
+typing-extensions>=4.5.0
