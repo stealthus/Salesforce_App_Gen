@@ -11,6 +11,7 @@ from azure.core.credentials import AzureKeyCredential
 import tempfile
 import io
 import re
+import pinecone
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -21,6 +22,10 @@ logging.basicConfig(
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 # === Environment Variables ===
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.environ.get("PINECONE_ENVIRONMENT")
+PINECONE_INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME")
+
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 MODEL = "gpt-3.5-turbo"
@@ -174,6 +179,40 @@ def extract_requested_word_count(user_prompt):
 def calculate_max_tokens(word_count):
     return int(word_count * 1.5)
 
+def index_all_documents_to_pinecone(docs_info):
+    try:
+        pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+
+        if PINECONE_INDEX_NAME not in pinecone.list_indexes():
+            pinecone.create_index(PINECONE_INDEX_NAME, dimension=3072, metric="cosine")
+
+        index = pinecone.Index(PINECONE_INDEX_NAME)
+
+        for i, doc in enumerate(docs_info):
+            try:
+                text = doc.get("text", "").strip()
+                if not text:
+                    continue
+
+                input_text = text[:12000]  # truncate to stay within token limit
+
+                embedding_response = openai.Embedding.create(
+                    input=input_text,
+                    model="text-embedding-3-large"
+                )
+                embedding = embedding_response["data"][0]["embedding"]
+
+                index.upsert([
+                    (f"doc-{i}", embedding, {"filename": doc["filename"]})
+                ])
+                logging.info(f"[PINECONE] Indexed {doc['filename']}")
+
+            except Exception as e:
+                logging.error(f"[PINECONE ERROR] {doc.get('filename', 'unknown')} => {e}")
+
+    except Exception as e:
+        logging.error(f"[PINECONE INIT ERROR] {e}")
+
 # === Question Answering ===
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
@@ -214,6 +253,32 @@ def safe_concatenate_and_trim(docs, word_limit):
     combined = "\n\n".join(docs)
     return limit_text_by_words(combined, word_limit)
 
+def pinecone_vector_search(query_text, top_k=5):
+    try:
+        pinecone.init(api_key=os.environ.get("PINECONE_API_KEY"), environment=os.environ.get("PINECONE_ENVIRONMENT"))
+        index = pinecone.Index(os.environ.get("PINECONE_INDEX_NAME"))
+
+        embedding_response = openai.Embedding.create(
+            input=query_text[:12000],
+            model="text-embedding-3-large"
+        )
+        embedding = embedding_response["data"][0]["embedding"]
+
+        results = index.query(vector=embedding, top_k=top_k, include_metadata=True)
+
+        chunks = []
+        for match in results.get("matches", []):
+            metadata = match.get("metadata", {})
+            chunk_text = metadata.get("text", "")
+            if chunk_text:
+                chunks.append(chunk_text)
+
+        logging.info(f"[PINECONE SEARCH] Retrieved {len(chunks)} matches from Pinecone.")
+        return "\n\n---\n\n".join(chunks)
+
+    except Exception as e:
+        logging.error(f"[PINECONE SEARCH ERROR] {e}")
+        return ""
 
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
@@ -246,24 +311,46 @@ Prompt:
         mode = intent_response.choices[0].message.content.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
-        # === Step 3: Gather repository content ===
-        logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
+        # === Step 3: Retrieve repository content from Pinecone ===
+        logging.info("[STEP 3] Retrieving repository context from Pinecone vector DB")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
-            azure_docs = read_files_from_datalake()
-            logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
+            try:
+                from pinecone import Pinecone
+                pinecone.init(
+                    api_key=os.environ.get("PINECONE_API_KEY"),
+                    environment=os.environ.get("PINECONE_ENVIRONMENT")
+                )
+                index = Pinecone().Index(os.environ.get("PINECONE_INDEX_NAME"))
 
-            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-            logging.info(f"[REPO] Keywords extracted: {keywords}")
+                embedding_response = openai.Embedding.create(
+                    input=summarized_requirements[:12000],
+                    model="text-embedding-3-large"
+                )
+                embedding = embedding_response["data"][0]["embedding"]
 
-            matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
-            logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
+                pinecone_results = index.query(
+                    vector=embedding,
+                    top_k=5,
+                    include_metadata=True
+                )
 
-            if matches:
-                azure_context = safe_concatenate_and_trim(matches[:3], word_limit=3000)
-            else:
-                logging.warning("[REPO] No strong keyword matches found in repository.")
-                azure_context = "No strong repository content match found."
+                matches = [
+                    match["metadata"].get("text", "")
+                    for match in pinecone_results.get("matches", [])
+                    if "metadata" in match and "text" in match["metadata"]
+                ]
+
+                if matches:
+                    azure_context = safe_concatenate_and_trim(matches, word_limit=3000)
+                    logging.info(f"[PINECONE] Retrieved {len(matches)} chunks from vector DB.")
+                else:
+                    azure_context = "No relevant vector matches found in the repository."
+                    logging.warning("[PINECONE] No matches found.")
+
+            except Exception as e:
+                logging.error(f"[PINECONE RETRIEVAL ERROR] {e}")
+                azure_context = "No relevant repository content could be retrieved."
 
         # === Step 4: Gather internet data ===
         logging.info("[STEP 4] Searching internet context (if required)")
