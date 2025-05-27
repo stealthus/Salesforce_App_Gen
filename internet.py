@@ -11,7 +11,7 @@ from azure.core.credentials import AzureKeyCredential
 import tempfile
 import io
 import re
-import pinecone
+import google.generativeai as genai
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -22,13 +22,11 @@ logging.basicConfig(
 logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 # === Environment Variables ===
-PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-PINECONE_ENVIRONMENT = os.environ.get("PINECONE_ENVIRONMENT")
-PINECONE_INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME")
-
-openai.api_key = os.environ.get("OPENAI_API_KEY")
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
-MODEL = "gpt-3.5-turbo"
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+
+genai.configure(api_key=GOOGLE_API_KEY)
+GEMINI_MODEL = genai.GenerativeModel("gemini-pro")
 
 print("hello")
 
@@ -73,6 +71,7 @@ def read_pdf(file_path):
         return ""
 
 # === Azure Data Lake Reader ===
+
 def get_datalake_service_client():
     account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
     account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
@@ -88,7 +87,6 @@ def read_files_from_datalake():
         FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
 
         logging.info(f"[DATALAKE] Connecting to Data Lake: {ACCOUNT_NAME}, filesystem: {FILESYSTEM_NAME}")
-
         service_client = DataLakeServiceClient(
             account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
             credential=ACCOUNT_KEY
@@ -97,11 +95,11 @@ def read_files_from_datalake():
         paths = file_system_client.get_paths()
 
         docs_info = []
-        file_count = 0
 
         for path in paths:
             if path.is_directory:
                 continue
+
             try:
                 file_path = path.name
                 logging.info(f"[DATALAKE] Reading file: {file_path}")
@@ -121,7 +119,7 @@ def read_files_from_datalake():
                         tmp.flush()
                         text = read_docx(tmp.name)
                 else:
-                    logging.info(f"[DATALAKE] Detected text file: {file_path}")
+                    logging.info(f"[DATALAKE] Detected plain text file: {file_path}")
                     text = file_data.decode("utf-8", errors="ignore")
 
                 if text.strip():
@@ -143,26 +141,22 @@ def read_files_from_datalake():
 
 
 # === Helpers ===
-def chunk_text(text, max_words=1200):
+# === Text Chunking ===
+def chunk_text(text, max_words=4000):  # Leverage Gemini's high token limit
     words = text.split()
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
 
+# === Summarization using Gemini ===
 def summarize_text(text, max_tokens=800):
     try:
-        response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "Summarize technical content concisely."},
-                {"role": "user", "content": f"Summarize this in {max_tokens} tokens:\n{text[:8000]}"}
-            ],
-            max_tokens=max_tokens,
-            temperature=0.5
-        )
-        return response.choices[0].message.content.strip()
+        model = genai.GenerativeModel("gemini-pro")
+        response = model.generate_content(f"Summarize this in {max_tokens} tokens:\n{text[:24000]}")
+        return response.text.strip()
     except Exception as e:
-        logging.error(f"[OpenAI SUMMARY ERROR] {e}")
+        logging.error(f"[Gemini SUMMARY ERROR] {e}")
         return "Summary failed."
 
+# === Web Search (unchanged) ===
 def serpapi_search(query, max_results=5):
     try:
         params = {"engine": "google", "q": query, "api_key": SERP_API_KEY}
@@ -172,6 +166,7 @@ def serpapi_search(query, max_results=5):
         logging.error(f"[SERPAPI ERROR] {e}")
         return []
 
+# === Word Count Utilities ===
 def extract_requested_word_count(user_prompt):
     match = re.search(r"(\d{2,5})\s*words?", user_prompt.lower())
     return int(match.group(1)) if match else None
@@ -179,46 +174,11 @@ def extract_requested_word_count(user_prompt):
 def calculate_max_tokens(word_count):
     return int(word_count * 1.5)
 
-def index_all_documents_to_pinecone(docs_info):
-    try:
-        pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
-
-        if PINECONE_INDEX_NAME not in pinecone.list_indexes():
-            pinecone.create_index(PINECONE_INDEX_NAME, dimension=3072, metric="cosine")
-
-        index = pinecone.Index(PINECONE_INDEX_NAME)
-
-        for i, doc in enumerate(docs_info):
-            try:
-                text = doc.get("text", "").strip()
-                if not text:
-                    continue
-
-                input_text = text[:12000]  # truncate to stay within token limit
-
-                embedding_response = openai.Embedding.create(
-                    input=input_text,
-                    model="text-embedding-3-large"
-                )
-                embedding = embedding_response["data"][0]["embedding"]
-
-                index.upsert([
-                    (f"doc-{i}", embedding, {"filename": doc["filename"]})
-                ])
-                logging.info(f"[PINECONE] Indexed {doc['filename']}")
-
-            except Exception as e:
-                logging.error(f"[PINECONE ERROR] {doc.get('filename', 'unknown')} => {e}")
-
-    except Exception as e:
-        logging.error(f"[PINECONE INIT ERROR] {e}")
-
-# === Question Answering ===
+# === QA using Gemini ===
 def answer_question_from_doc(document_text, user_question):
     chunks = chunk_text(document_text)
-    
-    chunks = chunks[:8]
-    for i, chunk in enumerate(chunks):
+
+    for i, chunk in enumerate(chunks[:8]):
         try:
             logging.info(f"[QA Chunk {i+1}/{len(chunks)}] Searching for answer...")
             prompt = f"""
@@ -232,19 +192,16 @@ Question:
 
 If the answer is not found, say: "The answer is not available in the document."
 """
-            response = openai.ChatCompletion.create(
-                model=MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
-                temperature=0.2
-            )
-            answer = response.choices[0].message.content.strip()
+            model = genai.GenerativeModel("gemini-pro")
+            response = model.generate_content(prompt)
+            answer = response.text.strip()
             if "not available" not in answer.lower():
                 return answer
         except Exception as e:
-            logging.error(f"[OpenAI QA ERROR Chunk {i+1}] {e}")
+            logging.error(f"[Gemini QA ERROR Chunk {i+1}] {e}")
     return "The answer is not available in the document."
 
+# === Utility Functions ===
 def limit_text_by_words(text, word_limit):
     words = text.split()
     return ' '.join(words[:word_limit])
@@ -252,33 +209,6 @@ def limit_text_by_words(text, word_limit):
 def safe_concatenate_and_trim(docs, word_limit):
     combined = "\n\n".join(docs)
     return limit_text_by_words(combined, word_limit)
-
-def pinecone_vector_search(query_text, top_k=5):
-    try:
-        pinecone.init(api_key=os.environ.get("PINECONE_API_KEY"), environment=os.environ.get("PINECONE_ENVIRONMENT"))
-        index = pinecone.Index(os.environ.get("PINECONE_INDEX_NAME"))
-
-        embedding_response = openai.Embedding.create(
-            input=query_text[:12000],
-            model="text-embedding-3-large"
-        )
-        embedding = embedding_response["data"][0]["embedding"]
-
-        results = index.query(vector=embedding, top_k=top_k, include_metadata=True)
-
-        chunks = []
-        for match in results.get("matches", []):
-            metadata = match.get("metadata", {})
-            chunk_text = metadata.get("text", "")
-            if chunk_text:
-                chunks.append(chunk_text)
-
-        logging.info(f"[PINECONE SEARCH] Retrieved {len(chunks)} matches from Pinecone.")
-        return "\n\n---\n\n".join(chunks)
-
-    except Exception as e:
-        logging.error(f"[PINECONE SEARCH ERROR] {e}")
-        return ""
 
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
@@ -302,55 +232,29 @@ Classify this prompt into one of the following:
 Prompt:
 {user_prompt.strip()}
 """
-        intent_response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": intent_prompt.strip()}],
-            max_tokens=10,
-            temperature=0
-        )
-        mode = intent_response.choices[0].message.content.strip().lower()
+        model = genai.GenerativeModel("gemini-pro")
+        intent_response = model.generate_content(intent_prompt)
+        mode = intent_response.text.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
-        # === Step 3: Retrieve repository content from Pinecone ===
-        logging.info("[STEP 3] Retrieving repository context from Pinecone vector DB")
+        # === Step 3: Gather repository content ===
+        logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
-            try:
-                from pinecone import Pinecone
-                pinecone.init(
-                    api_key=os.environ.get("PINECONE_API_KEY"),
-                    environment=os.environ.get("PINECONE_ENVIRONMENT")
-                )
-                index = Pinecone().Index(os.environ.get("PINECONE_INDEX_NAME"))
+            azure_docs = read_files_from_datalake()
+            logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
 
-                embedding_response = openai.Embedding.create(
-                    input=summarized_requirements[:12000],
-                    model="text-embedding-3-large"
-                )
-                embedding = embedding_response["data"][0]["embedding"]
+            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
+            logging.info(f"[REPO] Keywords extracted: {keywords}")
 
-                pinecone_results = index.query(
-                    vector=embedding,
-                    top_k=5,
-                    include_metadata=True
-                )
+            matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
+            logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
 
-                matches = [
-                    match["metadata"].get("text", "")
-                    for match in pinecone_results.get("matches", [])
-                    if "metadata" in match and "text" in match["metadata"]
-                ]
-
-                if matches:
-                    azure_context = safe_concatenate_and_trim(matches, word_limit=3000)
-                    logging.info(f"[PINECONE] Retrieved {len(matches)} chunks from vector DB.")
-                else:
-                    azure_context = "No relevant vector matches found in the repository."
-                    logging.warning("[PINECONE] No matches found.")
-
-            except Exception as e:
-                logging.error(f"[PINECONE RETRIEVAL ERROR] {e}")
-                azure_context = "No relevant repository content could be retrieved."
+            if matches:
+                azure_context = safe_concatenate_and_trim(matches[:3], word_limit=3000)
+            else:
+                logging.warning("[REPO] No strong keyword matches found in repository.")
+                azure_context = "No strong repository content match found."
 
         # === Step 4: Gather internet data ===
         logging.info("[STEP 4] Searching internet context (if required)")
@@ -379,7 +283,7 @@ Prompt:
             )
 
         # === Step 6: Build final prompt ===
-        logging.info("[STEP 6] Constructing final prompt for OpenAI")
+        logging.info("[STEP 6] Constructing final prompt for Gemini")
         sections = [
             word_instruction,
             f"# User Prompt\n{user_prompt.strip()}",
@@ -392,21 +296,13 @@ Prompt:
             sections.append(f"# Internet Findings\n{internet_data.strip()}")
 
         final_prompt = "\n\n".join(sections)
-        logging.info(f"[OPENAI] Prompt word count: {len(final_prompt.split())}, max_tokens: {dynamic_max_tokens}")
+        logging.info(f"[GEMINI] Prompt word count: {len(final_prompt.split())}, max_tokens (approx): {dynamic_max_tokens}")
 
-        # === Step 7: Call OpenAI ===
-        logging.info("[STEP 7] Calling OpenAI to generate final proposal")
-        response = openai.ChatCompletion.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "You are a technical expert and must strictly follow the user's instructions, especially regarding word count."},
-                {"role": "user", "content": final_prompt}
-            ],
-            max_tokens=dynamic_max_tokens,
-            temperature=0.6
-        )
-
-        return response.choices[0].message.content.strip()
+        # === Step 7: Call Gemini ===
+        logging.info("[STEP 7] Calling Gemini to generate final proposal")
+        model = genai.GenerativeModel("gemini-pro")
+        response = model.generate_content(final_prompt)
+        return response.text.strip()
 
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
