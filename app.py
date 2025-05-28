@@ -5,6 +5,8 @@ import os
 import tempfile
 import logging
 from internet import read_docx, read_pdf, generate_comprehensive_proposal
+from google.generativeai import GenerativeModel
+
 
 # === App Setup ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
@@ -40,12 +42,15 @@ def generate_proposal():
                 return jsonify({"error": "Empty document"}), 400
 
             docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
+            
+            model = GenerativeModel("gemini-pro")
 
             result = generate_comprehensive_proposal(
                 requirements_text=document_text,
                 docs_info=docs_info,
                 user_prompt=user_prompt,
-                use_internet=use_internet
+                use_internet=use_internet,
+                model = model
             )
 
             logger.info("[RESPONSE] Sending generated text to frontend.")
