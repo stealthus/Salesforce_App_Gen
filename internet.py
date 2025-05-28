@@ -147,14 +147,15 @@ def chunk_text(text, max_words=4000):  # Leverage Gemini's high token limit
     return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
 
 # === Summarization using Gemini ===
-def summarize_text(text, max_tokens=800):
+def summarize_text(text, max_tokens=800, model=None):
     try:
-        model = genai.GenerativeModel("gemini-pro")
+        model = model or genai.GenerativeModel("gemini-pro")
         response = model.generate_content(f"Summarize this in {max_tokens} tokens:\n{text[:24000]}")
         return response.text.strip()
     except Exception as e:
         logging.error(f"[Gemini SUMMARY ERROR] {e}")
         return "Summary failed."
+
 
 # === Web Search (unchanged) ===
 def serpapi_search(query, max_results=5):
@@ -212,10 +213,11 @@ def safe_concatenate_and_trim(docs, word_limit):
 
 # === Proposal Generation ===
 def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
-    try:
+   
         # === Step 1: Summarize uploaded document ===
-        logging.info("[STEP 1] Summarizing uploaded document")
-        summarized_requirements = summarize_text(requirements_text, 800)
+    try:
+        model = model or genai.GenerativeModel("gemini-pro")
+        summarized_requirements = summarize_text(requirements_text, 800, model=model)
         uploaded_doc_text = safe_concatenate_and_trim(
             [doc.get("text", "") for doc in docs_info if doc.get("text")],
             word_limit=3000
