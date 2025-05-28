@@ -38,3 +38,7 @@ nltk
 typing-extensions>=4.5.0
 
 google-generativeai>=0.3.1
+google-auth>=2.22.0
+grpcio>=1.56.0
+protobuf>=4.21.6
+
