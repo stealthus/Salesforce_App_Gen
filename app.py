@@ -5,8 +5,8 @@ import os
 import tempfile
 import logging
 from internet import read_docx, read_pdf, generate_comprehensive_proposal
-from google.generativeai import GenerativeModel
-
+import google.generativeai as genai
+genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 # === App Setup ===
 app = Flask(__name__, static_folder="frontend/build", static_url_path="")
@@ -43,7 +43,7 @@ def generate_proposal():
 
             docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
             
-            model = GenerativeModel("gemini-pro")
+            model = genai.GenerativeModel("gemini-pro")
 
             result = generate_comprehensive_proposal(
                 requirements_text=document_text,
