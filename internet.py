@@ -125,11 +125,12 @@ def read_files_from_datalake():
 
                 if text.strip():
                     char_count = len(text)
-                    logging.info(f"[DATALAKE] Extracted {char_count} characters from: {file_path}")
+                    preview = text.strip()[:300].replace("\n", " ")
+                    logging.info(f"[DATALAKE] ✅ Parsed file: {file_path} | {char_count} characters")
+                    logging.info(f"[DATALAKE] Preview: {preview}...")
                     docs_info.append({"filename": file_path, "text": text})
                 else:
-                    logging.warning(f"[DATALAKE] No content extracted from: {file_path}")
-
+                 logging.warning(f"[DATALAKE] ⚠️ No readable content in file: {file_path}")
             except Exception as e:
                 logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {e}")
 
@@ -223,7 +224,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
             [doc.get("text", "") for doc in docs_info if doc.get("text")],
             word_limit=3000
         )
-
+        logging.info(f"[UPLOAD] Uploaded document content preview: {uploaded_doc_text[:300].replace(chr(10), ' ')}...")
         # === Step 2: Classify prompt intent ===
         logging.info("[STEP 2] Classifying user prompt intent")
         intent_prompt = f"""
