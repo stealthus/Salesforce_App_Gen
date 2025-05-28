@@ -40,6 +40,11 @@ def generate_proposal():
 
             if not document_text.strip():
                 return jsonify({"error": "Empty document"}), 400
+            
+            logger.info(f"[UPLOAD] Received file: {uploaded_file.filename}")
+            logger.info(f"[UPLOAD] Prompt: {user_prompt.strip()[:100]}")  # truncate long prompts
+            logger.info(f"[UPLOAD] Extracted content preview (first 300 chars): {document_text.strip()[:300]}")
+
 
             docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
             
