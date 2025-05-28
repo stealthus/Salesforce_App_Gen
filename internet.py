@@ -26,7 +26,8 @@ SERP_API_KEY = os.environ.get("SERP_API_KEY")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 genai.configure(api_key=GOOGLE_API_KEY)
-GEMINI_MODEL = genai.GenerativeModel("gemini-pro")
+GEMINI_MODEL = genai.GenerativeModel("models/gemini-1.5-pro-latest")
+
 
 print("hello")
 
@@ -149,7 +150,7 @@ def chunk_text(text, max_words=4000):  # Leverage Gemini's high token limit
 # === Summarization using Gemini ===
 def summarize_text(text, max_tokens=800, model=None):
     try:
-        model = model or genai.GenerativeModel("gemini-pro")
+        model = model or genai.GenerativeModel("models/gemini-1.5-pro-latest")
         response = model.generate_content(f"Summarize this in {max_tokens} tokens:\n{text[:24000]}")
         return response.text.strip()
     except Exception as e:
@@ -193,7 +194,7 @@ Question:
 
 If the answer is not found, say: "The answer is not available in the document."
 """
-            model = genai.GenerativeModel("gemini-pro")
+            model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
             response = model.generate_content(prompt)
             answer = response.text.strip()
             if "not available" not in answer.lower():
@@ -216,7 +217,7 @@ def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, u
    
         # === Step 1: Summarize uploaded document ===
     try:
-        model = model or genai.GenerativeModel("gemini-pro")
+        model = model or genai.GenerativeModel("models/gemini-1.5-pro-latest")
         summarized_requirements = summarize_text(requirements_text, 800, model=model)
         uploaded_doc_text = safe_concatenate_and_trim(
             [doc.get("text", "") for doc in docs_info if doc.get("text")],
@@ -301,7 +302,7 @@ Prompt:
 
         # === Step 7: Call Gemini ===
         logging.info("[STEP 7] Calling Gemini to generate final proposal")
-        model = genai.GenerativeModel("gemini-pro")
+        model = model or genai.GenerativeModel("models/gemini-1.5-pro-latest")
         response = model.generate_content(final_prompt)
         return response.text.strip()
 
