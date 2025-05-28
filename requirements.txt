@@ -1,38 +1,40 @@
+# --- Web Framework ---
 Flask
 flask-cors
 gunicorn
 
+# --- OpenAI & Tokenization ---
 openai>=1.1.0
 tiktoken
 
+# --- Document Parsing ---
 python-docx
 PyPDF2
+pdfplumber
+pdfminer.six
 fpdf
-requests
-numpy
 
-# Azure SDKs
+# --- Azure SDKs ---
 azure-core
 azure-identity
 azure-storage-file-datalake
 azure-ai-formrecognizer
 
-# Logging & PDF extras
-werkzeug
-loguru
-pdfplumber
-pdfminer.six
-
-# Pinecone & Retry
-pinecone-client
+# --- Networking & Utilities ---
+requests
+numpy
 tenacity>=8.2.2
 boto3>=1.26.0
 
-# LlamaIndex stack (compatible versions!)
-llama-index==0.10.30
-llama-index-core==0.10.30
-llama-index-vector-stores-pinecone==0.1.2
+# --- Pinecone Vector DB ---
+pinecone-client>=2.2.2
 
-# Optional: useful for chunking and parsing
+# --- Logging ---
+loguru
+werkzeug
+
+# --- Optional NLP Utilities ---
 nltk
 typing-extensions>=4.5.0
+
+google-generativeai
