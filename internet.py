@@ -212,7 +212,7 @@ def safe_concatenate_and_trim(docs, word_limit):
     return limit_text_by_words(combined, word_limit)
 
 # === Proposal Generation ===
-def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet):
+def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet,model=None):
    
         # === Step 1: Summarize uploaded document ===
     try:
@@ -234,7 +234,6 @@ Classify this prompt into one of the following:
 Prompt:
 {user_prompt.strip()}
 """
-        model = genai.GenerativeModel("gemini-pro")
         intent_response = model.generate_content(intent_prompt)
         mode = intent_response.text.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
