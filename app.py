@@ -43,7 +43,7 @@ def generate_proposal():
 
             docs_info = [{"filename": uploaded_file.filename, "text": document_text}]
             
-            model = genai.GenerativeModel("gemini-pro")
+            model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
 
             result = generate_comprehensive_proposal(
                 requirements_text=document_text,
