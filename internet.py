@@ -82,65 +82,81 @@ def get_datalake_service_client():
     )
 
 def read_files_from_datalake():
+    docs_info = []
+
     try:
+        # === Load environment variables ===
         ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
         ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
         FILESYSTEM_NAME = os.environ.get("AZURE_DATA_LAKE_FILESYSTEM")
 
-        logging.info(f"[DATALAKE] Connecting to Data Lake: {ACCOUNT_NAME}, filesystem: {FILESYSTEM_NAME}")
+        if not all([ACCOUNT_NAME, ACCOUNT_KEY, FILESYSTEM_NAME]):
+            logging.error("[DATALAKE] ❌ Missing one or more required environment variables.")
+            return []
+
+        # === Connect to Azure Data Lake ===
+        logging.info(f"[DATALAKE] Connecting to: {ACCOUNT_NAME} | Filesystem: {FILESYSTEM_NAME}")
         service_client = DataLakeServiceClient(
             account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
             credential=ACCOUNT_KEY
         )
         file_system_client = service_client.get_file_system_client(FILESYSTEM_NAME)
-        paths = file_system_client.get_paths()
 
-        docs_info = []
+        # === Retrieve file paths ===
+        logging.info("[DATALAKE] Fetching file paths...")
+        paths = list(file_system_client.get_paths())
+        logging.info(f"[DATALAKE] Found {len(paths)} paths.")
 
         for path in paths:
+            logging.info(f"[DATALAKE] Path: {path.name} | Directory: {path.is_directory}")
             if path.is_directory:
                 continue
 
             try:
                 file_path = path.name
-                logging.info(f"[DATALAKE] Reading file: {file_path}")
-
                 file_client = file_system_client.get_file_client(file_path)
                 download = file_client.download_file()
                 file_data = download.readall()
 
                 text = ""
-                if file_path.lower().endswith(".pdf"):
-                    logging.info(f"[DATALAKE] Detected PDF: {file_path}")
+                ext = file_path.lower().split('.')[-1]
+
+                if ext == "pdf":
+                    logging.info(f"[DATALAKE] Processing PDF: {file_path}")
                     text = analyze_pdf_with_ai(io.BytesIO(file_data), filename=file_path)
-                elif file_path.lower().endswith(".docx"):
-                    logging.info(f"[DATALAKE] Detected DOCX: {file_path}")
+
+                elif ext == "docx":
+                    logging.info(f"[DATALAKE] Processing DOCX: {file_path}")
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                         tmp.write(file_data)
                         tmp.flush()
                         text = read_docx(tmp.name)
+
                 else:
-                    logging.info(f"[DATALAKE] Detected plain text file: {file_path}")
-                    text = file_data.decode("utf-8", errors="ignore")
+                    logging.info(f"[DATALAKE] Processing Text File: {file_path}")
+                    try:
+                        text = file_data.decode("utf-8", errors="ignore")
+                    except Exception as decode_error:
+                        logging.error(f"[DATALAKE DECODE ERROR] {file_path} => {decode_error}")
+                        continue
 
                 if text.strip():
                     char_count = len(text)
-                    preview = text.strip()[:300].replace("\n", " ")
-                    logging.info(f"[DATALAKE] ✅ Parsed file: {file_path} | {char_count} characters")
+                    preview = text[:300].replace("\n", " ")
+                    logging.info(f"[DATALAKE] ✅ Parsed: {file_path} ({char_count} chars)")
                     logging.info(f"[DATALAKE] Preview: {preview}...")
                     docs_info.append({"filename": file_path, "text": text})
                 else:
-                 logging.warning(f"[DATALAKE] ⚠️ No readable content in file: {file_path}")
-            except Exception as e:
-                logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {e}")
+                    logging.warning(f"[DATALAKE] ⚠️ No readable content in: {file_path}")
 
-        logging.info(f"[DATALAKE] Total files processed: {len(docs_info)}")
-        return docs_info
+            except Exception as file_error:
+                logging.error(f"[DATALAKE DOC READ ERROR] {path.name} => {file_error}")
 
     except Exception as e:
         logging.error(f"[DATALAKE CONNECTION ERROR] {e}")
-        return []
 
+    logging.info(f"[DATALAKE] Total files successfully processed: {len(docs_info)}")
+    return docs_info
 
 # === Helpers ===
 # === Text Chunking ===
