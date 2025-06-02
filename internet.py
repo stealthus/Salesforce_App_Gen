@@ -12,6 +12,8 @@ import tempfile
 import io
 import re
 import google.generativeai as genai
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -62,6 +64,20 @@ def analyze_pdf_with_ai(pdf_bytes, filename="unknown.pdf"):
     except Exception as e:
         logging.error(f"[FORM RECOGNIZER ERROR] {filename} => {e}")
         return ""
+
+def compute_cosine_similarity(query: str, documents: list[str], top_k: int = 3) -> list[str]:
+    """Compute cosine similarity between the query and repository documents."""
+    corpus = [query] + documents
+    vectorizer = TfidfVectorizer().fit_transform(corpus)
+    vectors = vectorizer.toarray()
+    
+    query_vector = vectors[0]
+    doc_vectors = vectors[1:]
+    
+    similarity_scores = cosine_similarity([query_vector], doc_vectors)[0]
+    top_indices = similarity_scores.argsort()[::-1][:top_k]
+    
+    return [documents[i] for i in top_indices]
 
 def read_pdf(file_path):
     try:
@@ -230,17 +246,18 @@ def safe_concatenate_and_trim(docs, word_limit):
     return limit_text_by_words(combined, word_limit)
 
 # === Proposal Generation ===
-def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet,model=None):
-   
-        # === Step 1: Summarize uploaded document ===
+def generate_comprehensive_proposal(requirements_text, docs_info, user_prompt, use_internet, model=None):
     try:
         model = model or genai.GenerativeModel("models/gemini-1.5-pro-latest")
+
+        # === Step 1: Summarize uploaded document ===
         summarized_requirements = summarize_text(requirements_text, 800, model=model)
         uploaded_doc_text = safe_concatenate_and_trim(
             [doc.get("text", "") for doc in docs_info if doc.get("text")],
             word_limit=3000
         )
         logging.info(f"[UPLOAD] Uploaded document content preview: {uploaded_doc_text[:300].replace(chr(10), ' ')}...")
+
         # === Step 2: Classify prompt intent ===
         logging.info("[STEP 2] Classifying user prompt intent")
         intent_prompt = f"""
@@ -256,24 +273,21 @@ Prompt:
         mode = intent_response.text.strip().lower()
         logging.info(f"[INTENT] Classified user prompt as: {mode}")
 
-        # === Step 3: Gather repository content ===
+        # === Step 3: Gather repository content with cosine similarity ===
         logging.info("[STEP 3] Reading and matching Azure Data Lake documents")
         azure_context = ""
         if mode in ["repository-needed", "solution-needed", "full-context"]:
             azure_docs = read_files_from_datalake()
             logging.info(f"[REPO] Total documents read from Data Lake: {len(azure_docs)}")
 
-            keywords = re.findall(r"\w+", summarized_requirements.lower())[:30]
-            logging.info(f"[REPO] Keywords extracted: {keywords}")
-
-            matches = [doc["text"] for doc in azure_docs if any(k in doc.get("text", "").lower() for k in keywords)]
-            logging.info(f"[REPO] Matched {len(matches)} repository documents based on keywords.")
-
-            if matches:
-                azure_context = safe_concatenate_and_trim(matches[:3], word_limit=3000)
+            repo_texts = [doc.get("text", "") for doc in azure_docs if doc.get("text")]
+            top_matches = compute_cosine_similarity(summarized_requirements, repo_texts, top_k=3)
+            if top_matches:
+                azure_context = safe_concatenate_and_trim(top_matches, word_limit=3000)
+                logging.info(f"[REPO] Selected top {len(top_matches)} documents using cosine similarity.")
             else:
-                logging.warning("[REPO] No strong keyword matches found in repository.")
                 azure_context = "No strong repository content match found."
+                logging.warning("[REPO] No matches found using cosine similarity.")
 
         # === Step 4: Gather internet data ===
         logging.info("[STEP 4] Searching internet context (if required)")
@@ -319,10 +333,10 @@ Prompt:
 
         # === Step 7: Call Gemini ===
         logging.info("[STEP 7] Calling Gemini to generate final proposal")
-        model = model or genai.GenerativeModel("models/gemini-1.5-pro-latest")
         response = model.generate_content(final_prompt)
         return response.text.strip()
 
     except Exception as e:
         logging.error(f"[generate_comprehensive_proposal ERROR] {e}")
         return "Unable to generate a response due to an internal error."
+
