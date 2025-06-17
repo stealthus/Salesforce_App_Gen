@@ -1,0 +1,150 @@
+/* Styles for the debug interface */
+
+.response-debug {
+    margin-top: 20px;
+    border-top: 1px dashed var(--border-color);
+    padding-top: 15px;
+}
+
+.response-debug summary {
+    cursor: pointer;
+    color: var(--primary-color);
+    font-weight: 500;
+    padding: 10px;
+    background-color: rgba(0, 102, 204, 0.05);
+    border-radius: 5px;
+    display: inline-block;
+}
+
+.response-debug summary:hover {
+    background-color: rgba(0, 102, 204, 0.1);
+}
+
+.debug-panel {
+    margin-top: 15px;
+    padding: 15px;
+    background-color: var(--light-gray);
+    border-radius: 5px;
+    border-left: 4px solid var(--accent-color);
+}
+
+.debug-section {
+    margin-bottom: 20px;
+}
+
+.debug-section h4 {
+    margin-top: 0;
+    color: var(--primary-color);
+    font-size: 1.1em;
+    padding-bottom: 5px;
+    border-bottom: 1px solid rgba(0, 102, 204, 0.2);
+}
+
+.debug-section h5 {
+    margin: 10px 0 5px 0;
+    color: var(--secondary-color);
+}
+
+.search-query {
+    font-family: monospace;
+    background-color: #f0f0f0;
+    padding: 2px 5px;
+    border-radius: 3px;
+}
+
+.prompt-info {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.prompt-section {
+    flex: 1;
+}
+
+pre {
+    background-color: #f0f0f0;
+    padding: 10px;
+    border-radius: 5px;
+    overflow-x: auto;
+    font-size: 0.9em;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-family: monospace;
+}
+
+.sources-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+    margin-top: 10px;
+}
+
+.sources-table th, 
+.sources-table td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sources-table th {
+    background-color: rgba(0, 102, 204, 0.1);
+    font-weight: 600;
+}
+
+.sources-table tr {
+    cursor: pointer;
+}
+
+.sources-table tr:hover {
+    background-color: rgba(0, 102, 204, 0.05);
+}
+
+.sources-table td:nth-child(2) {
+    text-align: center;
+    width: 100px;
+}
+
+.sources-table td:nth-child(1) {
+    width: 25%;
+    font-weight: 500;
+}
+
+/* Modal styles for source content */
+.source-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background-color: white;
+    padding: 20px;
+    border-radius: 5px;
+    width: 80%;
+    max-width: 800px;
+    max-height: 80%;
+    overflow-y: auto;
+    position: relative;
+}
+
+.close-button {
+    position: absolute;
+    top: 10px;
+    right: 15px;
+    font-size: 24px;
+    cursor: pointer;
+    color: #888;
+}
+
+.close-button:hover {
+    color: #333;
+}

@@ -1,0 +1,59 @@
+/* Styles for the sources section */
+.response-sources {
+    margin-top: 20px;
+    padding: 15px;
+    background-color: var(--light-gray);
+    border-radius: 5px;
+    border-left: 4px solid var(--accent-color);
+}
+
+.response-sources h4 {
+    margin-top: 0;
+    color: var(--primary-color);
+    font-size: 1.1em;
+}
+
+.query-info {
+    margin-bottom: 15px;
+    font-size: 0.9em;
+}
+
+.query-info .search-query {
+    font-family: monospace;
+    background-color: #f0f0f0;
+    padding: 2px 5px;
+    border-radius: 3px;
+}
+
+.sources-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+    margin-top: 10px;
+}
+
+.sources-table th, 
+.sources-table td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sources-table th {
+    background-color: rgba(0, 102, 204, 0.1);
+    font-weight: 600;
+}
+
+.sources-table tr:hover {
+    background-color: rgba(0, 102, 204, 0.05);
+}
+
+.sources-table td:nth-child(2) {
+    text-align: center;
+    width: 100px;
+}
+
+.sources-table td:nth-child(1) {
+    width: 25%;
+    font-weight: 500;
+}

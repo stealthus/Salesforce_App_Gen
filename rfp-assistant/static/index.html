@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RFP Response Assistant</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/sources.css">
+    <link rel="stylesheet" href="/static/debug.css">
+    <link rel="stylesheet" href="/static/chat.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>RFP Response Assistant</h1>
+            <p>Upload an RFP document to generate professional responses</p>
+        </header>
+
+        <main>
+            <!-- Upload Section -->
+            <section id="upload-section" class="active-section">
+                <div class="welcome-banner">
+                    <h2>Welcome, Samarth!</h2>
+                    <p>Ready to create professional RFP responses with AI assistance</p>
+                </div>
+                <div class="card">
+                    <h2>Upload RFP Document</h2>
+                    <div class="upload-area" id="drop-area">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <p>Drag & drop your RFP document here</p>
+                        <p class="small">or</p>
+                        <label for="file-input" class="button accent">Browse Files</label>
+                        <input type="file" id="file-input" accept=".pdf,.docx" hidden>
+                        <div class="file-types">
+                            <div class="file-type"><i class="far fa-file-pdf"></i> PDF</div>
+                            <div class="file-type"><i class="far fa-file-word"></i> DOCX</div>
+                        </div>
+                        <p class="small">Upload your RFP document to extract questions and generate responses</p>
+                    </div>
+                    <div class="upload-progress" id="upload-progress" style="display: none;">
+                        <div class="progress-bar">
+                            <div class="progress-fill"></div>
+                        </div>
+                        <p id="progress-text">Processing document...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Questions Section -->
+            <section id="questions-section" class="hidden-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>RFP Intelligence</h2>
+                        <div class="button-group">
+                            <button id="view-responses-btn" class="button secondary">View Responses</button>
+                            <button id="generate-all-btn" class="button">Generate All Responses</button>
+                        </div>
+                    </div>
+                    <div class="metadata-box" id="metadata-box">
+                        <h3>Document Metadata</h3>
+                        <div id="metadata-content" class="content-container">
+                            <!-- Metadata will be inserted here -->
+                        </div>
+                    </div>
+                    <div class="response-guide-box" id="response-guide-box">
+                        <h3>Response Guide</h3>
+                        <div id="response-guide-content" class="content-container">
+                            <!-- Response guide will be inserted here -->
+                        </div>
+                    </div>
+                    <div class="questions-list-container">
+                        <h3>RFP Requirements by Response Section</h3>
+                        <div class="view-container">
+                            <div class="response-structure" id="response-structure">
+                                <!-- Response structure will be inserted here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Responses Section -->
+            <section id="responses-section" class="hidden-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Generated Responses</h2>
+                        <div class="button-group">
+                            <button id="back-to-questions-btn" class="button secondary">Back to RFP Intelligence</button>
+                            <button id="export-btn" class="button">Export Document</button>
+                        </div>
+                    </div>
+                    <div class="responses-list" id="responses-list">
+                        <!-- Responses will be inserted here -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Export Section -->
+            <section id="export-section" class="hidden-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Export Document</h2>
+                        <button id="back-to-responses-btn" class="button secondary">Back to Responses</button>
+                    </div>
+                    <div class="export-options">
+                        <div class="export-preview" id="export-preview">
+                            <!-- Preview will be inserted here -->
+                        </div>
+                        <div class="export-actions">
+                            <button id="download-md-btn" class="button"><i class="fas fa-download"></i> Download Markdown</button>
+                            <p class="small">More export options coming soon</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>RFP Response Assistant &copy; 2025</p>
+        </footer>
+    </div>
+    
+    <!-- Chat Widget -->
+    <div class="chat-widget" id="chat-widget">
+        <div class="chat-toggle" id="chat-toggle" onclick="toggleChatDirect()">
+            <i class="fas fa-comments"></i>
+        </div>
+        <div class="chat-container" id="chat-container">
+            <div class="chat-header">
+                <h3>Knowledge Assistant</h3>
+                <button class="chat-close" id="chat-close"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="chat-messages" id="chat-messages">
+                <div class="chat-message system">
+                    <div class="chat-message-content">
+                        <p>Hello! I can help you search through your knowledge base. Ask me anything about your documents.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="chat-input-container">
+                <textarea id="chat-input" placeholder="Ask about your knowledge base..."></textarea>
+                <button id="chat-send" class="button accent"><i class="fas fa-paper-plane"></i></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Templates -->
+    <template id="chat-message-template">
+        <div class="chat-message">
+            <div class="chat-message-content">
+                <p class="chat-text"></p>
+                <div class="chat-sources">
+                    <span class="chat-sources-toggle"><i class="fas fa-info-circle"></i> <span>Sources</span></span>
+                    <ul class="chat-sources-list"></ul>
+                </div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="chat-loading-template">
+        <div class="chat-loading">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+    </template>
+    
+    <template id="question-template">
+        <div class="question-item">
+            <div class="question-header">
+                <h3 class="question-text"></h3>
+            </div>
+            <div class="question-details">
+                <span class="question-section"></span>
+                <!-- Response section and other details will be added here -->
+            </div>
+            <div class="question-actions">
+                <button class="button generate-btn">Generate Response</button>
+            </div>
+        </div>
+    </template>
+
+    <template id="response-template">
+        <div class="response-item">
+            <div class="response-header">
+                <h3 class="response-question"></h3>
+            </div>
+            <div class="response-content">
+                <p class="response-text"></p>
+            </div>
+            <div class="response-debug">
+                <details>
+                    <summary>Debug Information</summary>
+                    <div class="debug-panel">
+                        <div class="debug-section">
+                            <h4>Search Information</h4>
+                            <p><strong>Search Query:</strong> <span class="search-query"></span></p>
+                        </div>
+                        
+                        <div class="debug-section">
+                            <h4>Knowledge Sources</h4>
+                            <div class="sources-list">
+                                <!-- Sources will be listed here -->
+                            </div>
+                        </div>
+                        
+                        <div class="debug-section">
+                            <h4>Prompt Used</h4>
+                            <div class="prompt-info">
+                                <div class="prompt-section">
+                                    <h5>System Prompt</h5>
+                                    <pre class="system-prompt"></pre>
+                                </div>
+                                <div class="prompt-section">
+                                    <h5>User Prompt</h5>
+                                    <pre class="user-prompt"></pre>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="debug-section">
+                            <h4>Full Knowledge Context</h4>
+                            <details>
+                                <summary>Show/Hide Context</summary>
+                                <pre class="knowledge-context"></pre>
+                            </details>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </template>
+
+    <script src="/static/main.js"></script>
+    <script src="/static/chat.js"></script>
+    
+    <!-- Inline script to ensure chat functionality works -->
+    <script>
+        // Direct script to ensure chat toggle works
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Inline script loaded');
+            
+            // Direct chat toggle setup
+            var chatToggle = document.getElementById('chat-toggle');
+            var chatContainer = document.getElementById('chat-container');
+            var chatClose = document.getElementById('chat-close');
+            
+            if (chatToggle && chatContainer) {
+                console.log('Chat elements found');
+                
+                chatToggle.addEventListener('click', function() {
+                    console.log('Chat toggle clicked from inline script');
+                    chatContainer.classList.toggle('active');
+                    if (chatContainer.classList.contains('active')) {
+                        document.getElementById('chat-input').focus();
+                    }
+                });
+                
+                if (chatClose) {
+                    chatClose.addEventListener('click', function() {
+                        chatContainer.classList.remove('active');
+                    });
+                }
+            } else {
+                console.error('Chat elements not found');
+            }
+        });
+    </script>
+</body>
+</html>
